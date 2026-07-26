@@ -97,6 +97,23 @@ class VMSClient:
             logger.exception("Erro ao buscar ROIs para câmera %s", camera_id)
             return []
 
+    async def list_watchlist(self) -> list[dict[str, Any]]:
+        """
+        Busca a watchlist de reconhecimento facial via GET /api/v1/plugins/watchlist.
+
+        Retorna lista vazia se o tenant não tiver consentimento LGPD ativo
+        (gate aplicado do lado da API — ver ADR-014) ou em caso de erro.
+        """
+        if not self._client:
+            return []
+        try:
+            resp = await self._client.get("/api/v1/plugins/watchlist")
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+        except httpx.HTTPError:
+            logger.exception("Erro ao buscar watchlist facial")
+            return []
+
     async def ingest_event(
         self,
         camera_id: str,

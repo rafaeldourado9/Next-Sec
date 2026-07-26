@@ -23,6 +23,7 @@ from vms.contacts.models import ContactModel  # noqa: F401
 from vms.analytics.models import AnalyticsROI, ROISchedule, PluginInstallation, AnalyticsEvent  # noqa: F401
 from vms.events.models import VmsEventModel  # noqa: F401
 from vms.notifications.models import NotificationRuleModel, NotificationLogModel  # noqa: F401
+from vms.watchlist.models import FaceProfileModel  # noqa: F401
 
 
 @pytest_asyncio.fixture

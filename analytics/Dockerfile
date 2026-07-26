@@ -7,11 +7,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src
 
-# Dependências de sistema necessárias para OpenCV e libs nativas
+# Dependências de sistema necessárias para OpenCV e libs nativas.
+# build-essential é exigido pelo insightface (compila a extensão Cython
+# face3d/mesh na instalação — ver ADR-014).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     libgomp1 \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Garante pip e setuptools atualizados antes de instalar dependências

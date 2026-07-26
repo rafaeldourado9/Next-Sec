@@ -229,6 +229,12 @@ class Orchestrator:
         if api_rois:
             zones_config: dict[str, list[ROIConfig]] = {}
             for roi in api_rois:
+                # Zona com horário de ativação fora da janela atual — não processar.
+                # A API já resolve isso em `is_armed_now` (ver vms.analytics.schedule);
+                # o refresh de 60s abaixo garante que a zona volta a ser considerada
+                # assim que a janela armada começar.
+                if not roi.get("is_armed_now", True):
+                    continue
                 cam_id = roi["camera_id"]
                 zones_config.setdefault(cam_id, []).append(
                     ROIConfig(
@@ -480,6 +486,7 @@ class Orchestrator:
                             config=roi.get("config", {}),
                         )
                         for roi in fresh_rois
+                        if roi.get("is_armed_now", True)
                     ]
                     _last_zone_refresh = _now
                     if current_zones:

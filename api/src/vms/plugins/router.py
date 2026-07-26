@@ -278,6 +278,69 @@ async def list_plugin_rois(
 
 
 @router.get(
+    "/plugins/watchlist",
+    summary="Rostos da watchlist para reconhecimento facial",
+)
+async def list_plugin_watchlist(
+    api_key: ApiKeyHeader,
+    db: DbSession,
+) -> list[dict]:
+    """Retorna a watchlist facial do tenant para uso pelo plugin `face_recognition`.
+
+    Gate de LGPD: se `tenant.facial_recognition_enabled=False`, retorna lista
+    vazia — é este endpoint, não um mecanismo de enable/disable separado, que
+    garante que o plugin nunca compute embedding para um tenant sem
+    consentimento (ver ADR-014 e reuse-plan.md).
+
+    Resultado cacheado por 60s — o serviço de analytics baixa cada imagem de
+    referência e computa o embedding localmente (ver ADR-010/ADR-014).
+    """
+    from sqlalchemy import select
+    from vms.iam.models import TenantModel
+    from vms.plugins import watchlist_cache
+    from vms.watchlist.models import FaceProfileModel
+
+    tenant_id = await _resolve_plugin_tenant(api_key, db)
+
+    cached = watchlist_cache.get(tenant_id)
+    if cached is not None:
+        return cached
+
+    tenant = await db.scalar(select(TenantModel).where(TenantModel.id == tenant_id))
+    if not tenant or not tenant.facial_recognition_enabled:
+        watchlist_cache.set(tenant_id, [])
+        return []
+
+    result = await db.execute(
+        select(FaceProfileModel).where(
+            FaceProfileModel.tenant_id == tenant_id,
+            FaceProfileModel.is_active.is_(True),
+            FaceProfileModel.deleted_at.is_(None),
+        )
+    )
+    profiles = result.scalars().all()
+
+    from vms.infrastructure.config import get_settings
+    from vms.infrastructure.object_storage import ObjectStorage
+
+    storage = ObjectStorage()
+    bucket = get_settings().minio_bucket_analytics
+    data = []
+    for p in profiles:
+        if not p.reference_image_path:
+            continue
+        try:
+            image_url = storage.get_presigned_url(bucket, p.reference_image_path, expires=300)
+        except Exception:
+            logger.warning("Falha ao gerar URL de imagem da watchlist %s", p.id)
+            continue
+        data.append({"id": str(p.id), "name": p.name, "image_url": image_url})
+
+    watchlist_cache.set(tenant_id, data)
+    return data
+
+
+@router.get(
     "/plugins/cameras/{camera_id}/active-plugins",
     summary="Plugins ativos para uma câmera",
 )

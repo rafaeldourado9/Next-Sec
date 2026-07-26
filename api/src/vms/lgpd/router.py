@@ -75,12 +75,38 @@ async def grant_consent(
     saved = await repo.record_consent(record)
     logger.info("Consentimento LGPD registrado: user=%s type=%s", claims.user_id, data_type)
 
+    if data_type == DataType.FACE:
+        await _set_facial_recognition_enabled(db, claims.tenant_id, enabled=True)
+
     return {
         "id": str(saved.id),
         "data_type": saved.data_type,
         "action": saved.action,
         "created_at": saved.created_at.isoformat(),
     }
+
+
+async def _set_facial_recognition_enabled(db, tenant_id, *, enabled: bool) -> None:
+    """Liga/desliga o gate de reconhecimento facial do tenant.
+
+    Efeito colateral do consentimento LGPD tipo 'face' — sem isso, o
+    consentimento fica registrado em `consent_records` mas o plugin de
+    analytics nunca processa nada (gate em `tenant.facial_recognition_enabled`,
+    ver `analytics/plugins/face_recognition/plugin.py` e `GET /plugins/watchlist`).
+    """
+    from datetime import UTC
+    from sqlalchemy import select
+    from vms.iam.models import TenantModel
+
+    tid = tenant_id.value if hasattr(tenant_id, "value") else tenant_id
+    tenant = await db.scalar(select(TenantModel).where(TenantModel.id == tid))
+    if not tenant:
+        return
+    tenant.facial_recognition_enabled = enabled
+    tenant.facial_recognition_consent_at = datetime.now(UTC) if enabled else None
+
+    from vms.plugins import watchlist_cache
+    watchlist_cache.invalidate(tid)
 
 
 @router.post(
@@ -119,6 +145,9 @@ async def withdraw_consent(
 
     saved = await repo.record_consent(record)
     logger.info("Consentimento LGPD revogado: user=%s type=%s", claims.user_id, data_type)
+
+    if data_type == DataType.FACE:
+        await _set_facial_recognition_enabled(db, claims.tenant_id, enabled=False)
 
     return {
         "id": str(saved.id),

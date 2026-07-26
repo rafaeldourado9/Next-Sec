@@ -6,7 +6,7 @@ import {
   ChevronLeft, ChevronRight, LogOut,
   FileText, ClipboardList, Bot,
   ScanLine, Activity, LineChart,
-  Building2, ShieldCheck, Phone,
+  Building2, ShieldCheck, Phone, ScanFace,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/authStore'
@@ -35,6 +35,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: '/detections',     icon: ScanLine,        label: 'Detecções ALPR' },
       { to: '/events',         icon: Activity,        label: 'Eventos Analíticos' },
       { to: '/analytics',      icon: LineChart,       label: 'Dashboard Analytics' },
+      { to: '/watchlist',      icon: ScanFace,        label: 'Watchlist Facial' },
     ],
   },
   {

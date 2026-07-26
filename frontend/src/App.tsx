@@ -9,6 +9,7 @@ import { DashboardPage }       from '@/pages/DashboardPage'
 import { CamerasPage }         from '@/pages/CamerasPage'
 import { CameraDetailPage }    from '@/pages/CameraDetailPage'
 import { ContactsPage }        from '@/pages/ContactsPage'
+import { WatchlistPage }       from '@/pages/WatchlistPage'
 import { NotificationsPage }   from '@/pages/NotificationsPage'
 import { UsersPage }           from '@/pages/UsersPage'
 import { SettingsPage }        from '@/pages/SettingsPage'
@@ -69,6 +70,7 @@ function AuthenticatedApp() {
         <Route path="/events"        element={<AnalyticsEventsPage />} />
         <Route path="/analytics"     element={<AnalyticsDashboardPage />} />
         <Route path="/contacts"      element={<ContactsPage />} />
+        <Route path="/watchlist"     element={<WatchlistPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/agents"        element={<AgentsPage />} />
         <Route path="/reports"       element={<ReportsPage />} />

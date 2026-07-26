@@ -247,6 +247,7 @@ def _include_routers(app: FastAPI) -> None:
     from vms.reports.router import router as reports_router
     from vms.lgpd.router import router as lgpd_router
     from vms.contacts.router import router as contacts_router
+    from vms.watchlist.router import router as watchlist_router
 
     # Health
     app.include_router(health_router, prefix="/api/v1")
@@ -286,6 +287,9 @@ def _include_routers(app: FastAPI) -> None:
 
     # Contatos — telefones que recebem alertas (Next Sec)
     app.include_router(contacts_router, prefix="/api/v1")
+
+    # Watchlist — reconhecimento facial (Next Sec)
+    app.include_router(watchlist_router, prefix="/api/v1")
 
     # Admin Panel — franqueado (somente role admin)
     from vms.admin.router import router as admin_router
