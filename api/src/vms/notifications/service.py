@@ -1,12 +1,13 @@
 """Application service de notificações — casos de uso de regras e dispatch."""
 from __future__ import annotations
 
+import logging
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vms.shared.exceptions import NotFoundError
-from vms.notifications.dispatcher import dispatch_webhook
+from vms.notifications.dispatcher import dispatch_channel, dispatch_webhook
 from vms.notifications.domain import NotificationLog, NotificationRule
 from vms.notifications.repository import (
     NotificationLogRepository,
@@ -15,34 +16,53 @@ from vms.notifications.repository import (
     NotificationRuleRepositoryPort,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class NotificationService:
-    """Casos de uso de gerenciamento de regras e dispatch de webhooks."""
+    """Casos de uso de gerenciamento de regras e dispatch de notificações."""
 
     def __init__(
         self,
         rule_repo: NotificationRuleRepositoryPort,
         log_repo: NotificationLogRepositoryPort,
+        contact_repo: object | None = None,
     ) -> None:
         self._rules = rule_repo
         self._logs = log_repo
+        self._contacts = contact_repo
 
     async def create_rule(
         self,
         tenant_id: str,
         name: str,
         pattern: str,
-        dest_url: str,
-        secret: str,
+        destination_type: str = "webhook",
+        dest_url: str | None = None,
+        secret: str | None = None,
+        contact_id: str | None = None,
+        channel: str = "whatsapp",
     ) -> NotificationRule:
-        """Cria nova regra de notificação para o tenant."""
+        """Cria nova regra de notificação para o tenant.
+
+        `destination_type='webhook'` exige `dest_url`+`secret`.
+        `destination_type='contact'` exige `contact_id` — ver ADR-009.
+        """
+        if destination_type == "webhook" and not dest_url:
+            raise ValueError("destination_url é obrigatório para destination_type='webhook'")
+        if destination_type == "contact" and not contact_id:
+            raise ValueError("contact_id é obrigatório para destination_type='contact'")
+
         rule = NotificationRule(
             id=str(uuid.uuid4()),
             tenant_id=tenant_id,
             name=name,
             event_type_pattern=pattern,
+            destination_type=destination_type,
             destination_url=dest_url,
             webhook_secret=secret,
+            contact_id=contact_id,
+            channel=channel,
         )
         return await self._rules.create(rule)
 
@@ -69,10 +89,17 @@ class NotificationService:
         event_type: str,
         event_id: str,
         payload: dict,
+        *,
+        message: str | None = None,
+        media_url: str | None = None,
     ) -> list[NotificationLog]:
         """
-        Avalia regras ativas do tenant e dispara webhooks para as que casam.
+        Avalia regras ativas do tenant e dispara a notificação (webhook ou
+        canal/contato, conforme `destination_type` de cada regra) para as
+        que casam com `event_type`.
 
+        `message`/`media_url` só são usados por regras `destination_type=contact`
+        — regras `webhook` continuam usando o payload bruto (comportamento herdado).
         Persiste um NotificationLog para cada tentativa de dispatch.
         """
         rules = await self._rules.list_by_tenant(tenant_id, active_only=True)
@@ -80,7 +107,29 @@ class NotificationService:
 
         logs: list[NotificationLog] = []
         for rule in matching:
-            log = await dispatch_webhook(rule, event_type, event_id, payload)
+            if rule.destination_type == "contact":
+                if not self._contacts or not rule.contact_id:
+                    logger.warning(
+                        "Regra %s é destination_type=contact mas sem contact_id/repo — pulando",
+                        rule.id,
+                    )
+                    continue
+                contact = await self._contacts.get_by_id(rule.contact_id, tenant_id)
+                if not contact or not contact.is_active:
+                    logger.info(
+                        "Contato %s inativo/removido — notificação da regra %s não enviada",
+                        rule.contact_id, rule.id,
+                    )
+                    continue
+                log = await dispatch_channel(
+                    rule, event_type, event_id,
+                    phone_number=contact.phone_number,
+                    message=message or f"Alerta: {event_type}",
+                    media_url=media_url,
+                )
+            else:
+                log = await dispatch_webhook(rule, event_type, event_id, payload)
+
             saved = await self._logs.create(log)
             logs.append(saved)
 
@@ -89,7 +138,10 @@ class NotificationService:
 
 def build_notification_service(session: AsyncSession) -> NotificationService:
     """Factory que constrói NotificationService com implementações concretas."""
+    from vms.contacts.repository import ContactRepository
+
     return NotificationService(
         rule_repo=NotificationRuleRepository(session),
         log_repo=NotificationLogRepository(session),
+        contact_repo=ContactRepository(session),
     )

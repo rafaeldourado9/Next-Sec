@@ -32,11 +32,20 @@ class NotificationRuleModel(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     event_type_pattern: Mapped[str] = mapped_column(String(200), nullable=False)
-    destination_url: Mapped[str] = mapped_column(String(2000), nullable=False)
-    webhook_secret: Mapped[str] = mapped_column(String(255), nullable=False)
+    # ADITIVO (migration 0006): destination_type/contact_id/channel — ver ADR-009
+    destination_type: Mapped[str] = mapped_column(String(20), nullable=False, default="webhook")
+    destination_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    webhook_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contact_id: Mapped[str | None] = mapped_column(
+        _UUID_TYPE, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=True
+    )
+    channel: Mapped[str] = mapped_column(String(20), nullable=False, default="whatsapp")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 

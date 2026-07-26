@@ -14,14 +14,22 @@ class NotificationStatus(StrEnum):
 
 @dataclass
 class NotificationRule:
-    """Regra que determina quando e para onde enviar webhook."""
+    """Regra que determina quando e para onde enviar uma notificação.
+
+    `destination_type='webhook'` usa `destination_url`/`webhook_secret`
+    (comportamento herdado). `destination_type='contact'` usa `contact_id`
+    + `channel` — novo no Next Sec (ver ADR-009).
+    """
 
     id: str
     tenant_id: str
     name: str
-    event_type_pattern: str  # fnmatch: "alpr.*", "camera.*", "*"
-    destination_url: str
-    webhook_secret: str  # HMAC-SHA256 signing key
+    event_type_pattern: str  # fnmatch: "alpr.*", "analytics.intrusion.*", "*"
+    destination_type: str = "webhook"  # "webhook" | "contact"
+    destination_url: str | None = None
+    webhook_secret: str | None = None  # HMAC-SHA256 signing key
+    contact_id: str | None = None
+    channel: str = "whatsapp"
     is_active: bool = True
     created_at: datetime = field(default_factory=datetime.utcnow)
 

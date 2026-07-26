@@ -82,10 +82,10 @@ services:
       - MINIO_BUCKET_SNAPSHOTS=${MINIO_BUCKET_SNAPSHOTS:-nextsec-snapshots}
       - MINIO_BUCKET_CLIPS=${MINIO_BUCKET_CLIPS:-nextsec-clips}
       - MINIO_BUCKET_ANALYTICS=${MINIO_BUCKET_ANALYTICS:-nextsec-analytics}
-      # Storage adapter — destino final do clipe/frame (ver ADR-010)
-      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-google_drive}
-      - GOOGLE_DRIVE_CREDENTIALS_JSON=${GOOGLE_DRIVE_CREDENTIALS_JSON:-}
-      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID:-}
+      # Storage adapter — destino final do clipe/frame (ver ADR-010, revisado:
+      # MinIO local na VPS, Google Drive adiado a pedido do usuário)
+      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-local}
+      - CLIP_RETENTION_DAYS=${CLIP_RETENTION_DAYS:-30}
       # Channel adapter — canal de notificação (ver ADR-009)
       - NOTIFICATION_CHANNEL=${NOTIFICATION_CHANNEL:-whatsapp}
       - ARCANUM_BASE_URL=${ARCANUM_BASE_URL:-http://arcanum:3100}
@@ -128,7 +128,8 @@ services:
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-miniosecret}
-      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-google_drive}
+      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-local}
+      - CLIP_RETENTION_DAYS=${CLIP_RETENTION_DAYS:-30}
       - NOTIFICATION_CHANNEL=${NOTIFICATION_CHANNEL:-whatsapp}
       - ARCANUM_BASE_URL=${ARCANUM_BASE_URL:-http://arcanum:3100}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}

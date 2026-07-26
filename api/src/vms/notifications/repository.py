@@ -58,8 +58,11 @@ def _rule_to_domain(m: NotificationRuleModel) -> NotificationRule:
         tenant_id=m.tenant_id,
         name=m.name,
         event_type_pattern=m.event_type_pattern,
+        destination_type=m.destination_type,
         destination_url=m.destination_url,
         webhook_secret=m.webhook_secret,
+        contact_id=m.contact_id,
+        channel=m.channel,
         is_active=m.is_active,
         created_at=m.created_at,
     )
@@ -118,8 +121,11 @@ class NotificationRuleRepository:
             tenant_id=rule.tenant_id,
             name=rule.name,
             event_type_pattern=rule.event_type_pattern,
+            destination_type=rule.destination_type,
             destination_url=rule.destination_url,
             webhook_secret=rule.webhook_secret,
+            contact_id=rule.contact_id,
+            channel=rule.channel,
             is_active=rule.is_active,
         )
         self._session.add(model)

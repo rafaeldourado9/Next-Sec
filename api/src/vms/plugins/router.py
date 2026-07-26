@@ -210,6 +210,31 @@ async def ingest_plugin_event(
     except Exception:
         logger.warning("Falha ao criar AnalyticEvent (não crítico)", exc_info=True)
 
+    # Fluxo evento → clipe → storage → notificação (ADR-009/ADR-010).
+    # Síncrono no request: volume esperado é baixo (piloto de poucas dezenas de
+    # câmeras, eventos esparsos) — evita a complexidade de enfileirar via ARQ
+    # para o MVP. Nunca falha a ingestão do evento por causa disso (best-effort).
+    if body.snapshot_path:
+        try:
+            from vms.event_clips.service import build_event_clip_service
+            from vms.notifications.service import build_notification_service
+
+            clip = await build_event_clip_service(db).generate_and_upload(
+                vms_event_id=event_id, tenant_id=tenant_id, image_path=body.snapshot_path,
+            )
+            await build_notification_service(db).evaluate_and_dispatch(
+                tenant_id=tenant_id,
+                event_type=body.event_type,
+                event_id=event_id,
+                payload=body.payload or {},
+                message=f"Alerta Next Sec: {body.event_type} detectado",
+                media_url=clip.storage_url if clip.status.value == "uploaded" else None,
+            )
+        except Exception:
+            logger.exception(
+                "Falha no fluxo clipe/notificação para evento %s (não crítico)", event_id
+            )
+
     return PluginEventResponse(id=event_id)
 
 

@@ -10,6 +10,7 @@ import httpx
 from datetime import UTC, datetime
 
 from vms.infrastructure.security import sign_webhook_payload
+from vms.notifications.channel_adapter import build_channel_adapter
 from vms.notifications.domain import NotificationLog, NotificationRule, NotificationStatus
 
 logger = logging.getLogger(__name__)
@@ -94,3 +95,34 @@ async def dispatch_webhook(
             status=NotificationStatus.FAILED,
             response_body=str(exc)[:500],
         )
+
+
+async def dispatch_channel(
+    rule: NotificationRule,
+    event_type: str,
+    event_id: str,
+    *,
+    phone_number: str,
+    message: str,
+    media_url: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> NotificationLog:
+    """Envia notificação a um contato via ChannelAdapter (ex: WhatsApp/Arcanum).
+
+    `phone_number` é resolvido pelo chamador (o dispatcher não conhece o
+    bounded context de `contacts` — mesma separação já usada para webhooks,
+    onde a URL também é resolvida antes de chegar aqui).
+    """
+    adapter = build_channel_adapter(rule.channel, client=client)
+    success, status_code, response_body = await adapter.send(
+        destination=phone_number, message=message, media_url=media_url
+    )
+    return NotificationLog(
+        id=str(uuid.uuid4()),
+        tenant_id=rule.tenant_id,
+        rule_id=rule.id,
+        vms_event_id=event_id,
+        status=NotificationStatus.SUCCESS if success else NotificationStatus.FAILED,
+        response_code=status_code,
+        response_body=response_body,
+    )

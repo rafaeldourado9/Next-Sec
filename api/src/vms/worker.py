@@ -29,6 +29,7 @@ from arq.connections import RedisSettings
 
 from vms.infrastructure.config import get_settings
 from vms.cameras.tasks import task_camera_watchdog
+from vms.event_clips.tasks import task_cleanup_old_clips
 from vms.notifications.tasks import task_dispatch_notification
 from vms.reports.tasks import task_auto_monthly_report, task_generate_report
 from vms.audit.tasks import task_ensure_audit_partitions
@@ -107,16 +108,18 @@ class WorkerSettings:
     Usa a fila padrão do ARQ ("arq:queue") para não exigir _queue_name
     nos enqueue_job existentes.
 
-    TODO (Next Sec, gap real — ver reuse-plan.md): adicionar aqui as tasks
-    novas do fluxo evento→clipe→storage→notificação: upload do clipe ao
-    MinIO (staging), upload ao StorageProvider (Google Drive) e o dispatch
-    via ChannelAdapter (WhatsApp/Arcanum) quando destination_type='contact'.
+    NOTA (Sprint 4): o fluxo evento→clipe→storage→notificação roda hoje
+    síncrono dentro de `POST /plugins/events` (ver plugins/router.py) —
+    volume esperado é baixo (piloto de poucas dezenas de câmeras), então não
+    foi enfileirado via ARQ para o MVP. `task_cleanup_old_clips` é a única
+    parte desse fluxo que roda aqui (job periódico de retenção).
     """
 
     functions = [
         task_dispatch_notification,
         task_camera_watchdog,
         task_ensure_audit_partitions,
+        task_cleanup_old_clips,
     ]
     on_startup = startup
     on_shutdown = shutdown
@@ -124,6 +127,7 @@ class WorkerSettings:
     cron_jobs = [
         arq.cron(task_camera_watchdog, second={0, 30}),
         arq.cron(task_ensure_audit_partitions, day=1, hour=0, minute=1),
+        arq.cron(task_cleanup_old_clips, hour=3, minute=30),
     ]
     max_jobs = 50
     job_timeout = 300

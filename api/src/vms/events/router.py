@@ -250,6 +250,34 @@ async def list_events(
     return EventListResponse.build(items, total, page, page_size)
 
 
+@router.get(
+    "/events/{event_id}/clip",
+    summary="Status/URL do clipe gerado para o evento",
+    tags=["events"],
+)
+async def get_event_clip(
+    event_id: str,
+    claims: CurrentUser,
+    db: DbSession,
+) -> dict:
+    """Retorna o clipe (5-10s) gerado a partir do evento, se já existir.
+
+    Ver ADR-010 — clipe é armazenado no MinIO da própria VPS (sem provider
+    externo no MVP). 404 se o evento não existir/não for do tenant, ou se o
+    clipe ainda não foi gerado (processamento é assíncrono).
+    """
+    from vms.event_clips.schemas import EventClipResponse
+    from vms.event_clips.service import build_event_clip_service
+
+    svc = _event_svc(db)
+    # Lança NotFoundError (→ 404) se o evento não existir ou não for do tenant
+    await svc.get_event(event_id, claims.tenant_id)
+
+    # Lança NotFoundError (→ 404) se o clipe ainda não foi gerado
+    clip = await build_event_clip_service(db).get_clip(event_id)
+    return EventClipResponse.model_validate(clip).model_dump()
+
+
 @router.get("/events/{event_id}/image", include_in_schema=False)
 async def get_event_image(
     event_id: str,

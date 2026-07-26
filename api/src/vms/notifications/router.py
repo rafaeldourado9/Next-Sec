@@ -36,7 +36,10 @@ async def list_rules(claims: CurrentUser, db: DbSession) -> list[RuleResponse]:
                 id=r.id,
                 name=r.name,
                 event_type_pattern=r.event_type_pattern,
+                destination_type=r.destination_type,
                 destination_url=r.destination_url,
+                contact_id=r.contact_id,
+                channel=r.channel,
                 is_active=r.is_active,
                 created_at=r.created_at,
             )
@@ -61,18 +64,27 @@ async def create_rule(
     db: DbSession,
 ) -> RuleResponse:
     """Cria nova regra de notificação para o tenant autenticado."""
-    rule = await _svc(db).create_rule(
-        tenant_id=claims.tenant_id,
-        name=body.name,
-        pattern=body.event_type_pattern,
-        dest_url=str(body.destination_url),
-        secret=body.webhook_secret,
-    )
+    try:
+        rule = await _svc(db).create_rule(
+            tenant_id=claims.tenant_id,
+            name=body.name,
+            pattern=body.event_type_pattern,
+            destination_type=body.destination_type,
+            dest_url=str(body.destination_url) if body.destination_url else None,
+            secret=body.webhook_secret,
+            contact_id=body.contact_id,
+            channel=body.channel,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return RuleResponse(
         id=rule.id,
         name=rule.name,
         event_type_pattern=rule.event_type_pattern,
+        destination_type=rule.destination_type,
         destination_url=rule.destination_url,
+        contact_id=rule.contact_id,
+        channel=rule.channel,
         is_active=rule.is_active,
         created_at=rule.created_at,
     )
@@ -95,7 +107,10 @@ async def get_rule(
         id=rule.id,
         name=rule.name,
         event_type_pattern=rule.event_type_pattern,
+        destination_type=rule.destination_type,
         destination_url=rule.destination_url,
+        contact_id=rule.contact_id,
+        channel=rule.channel,
         is_active=rule.is_active,
         created_at=rule.created_at,
     )

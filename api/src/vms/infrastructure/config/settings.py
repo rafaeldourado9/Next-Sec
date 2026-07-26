@@ -71,6 +71,15 @@ class Settings(BaseSettings):
     minio_bucket_clips: str = Field(default="nextsec-clips")
     minio_bucket_exports: str = Field(default="vms-exports")
 
+    # ─── Storage Provider (destino final do clipe — ADR-010 revisado) ──────
+    storage_provider: str = Field(default="local")
+    clip_retention_days: int = Field(default=30)
+
+    # ─── Notification Channel (canal de alerta ao contato — ADR-009) ───────
+    notification_channel: str = Field(default="whatsapp")
+    arcanum_base_url: str = Field(default="http://arcanum:3100")
+    arcanum_instance_name: str = Field(default="next-sec")
+
     # ─── ALPR ─────────────────────────────────────────────────────────────
     alpr_dedup_ttl_seconds: int = Field(default=60)
     alpr_min_confidence: float = Field(default=0.80)
