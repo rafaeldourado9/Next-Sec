@@ -5,12 +5,14 @@ from vms.infrastructure.messaging.event_bus import (
     EventRegistry,
     connect_event_bus,
     disconnect_event_bus,
+    event_registry,
     publish_event,
 )
 
 __all__ = [
     "DomainEventBus",
     "EventRegistry",
+    "event_registry",
     "publish_event",
     "connect_event_bus",
     "disconnect_event_bus",
