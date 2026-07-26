@@ -1,0 +1,334 @@
+services:
+  # ─── Infraestrutura ──────────────────────────────────────────────────────
+  postgres:
+    build:
+      context: ./infra/postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-next_sec}
+      POSTGRES_USER: ${POSTGRES_USER:-next_sec}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-next_sec_dev}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-next_sec} -d ${POSTGRES_DB:-next_sec}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [next_sec]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [next_sec]
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-next_sec}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-next_sec_dev}
+    ports:
+      - "15672:15672"   # management UI (dev only)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks: [next_sec]
+
+  # ─── Streaming (ingestão RTSP para leitura de frames pelo analytics) ──────
+  mediamtx:
+    build:
+      context: ./infra/mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"   # RTSP
+      - "1935:1935"   # RTMP (push do edge agent)
+    volumes:
+      - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9997/v3/config/global/get"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks: [next_sec]
+    # NOTA: mediamtx.yml herdado do vms/ ainda tem gravação contínua habilitada —
+    # revisar/desligar (recordPath) durante a fase de dados/backend, já que o
+    # Next Sec não persiste vídeo contínuo, só o clipe de 5-10s por evento.
+
+  # ─── API Service ──────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./api
+      target: production
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-next_sec}:${POSTGRES_PASSWORD:-next_sec_dev}@postgres:5432/${POSTGRES_DB:-next_sec}
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-next_sec}:${RABBITMQ_PASSWORD:-next_sec_dev}@rabbitmq:5672/
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-change-in-prod}
+      - MEDIAMTX_API_URL=http://mediamtx:9997
+      - MEDIAMTX_RTMP_URL=rtmp://mediamtx:1935
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-miniosecret}
+      - MINIO_BUCKET_SNAPSHOTS=${MINIO_BUCKET_SNAPSHOTS:-nextsec-snapshots}
+      - MINIO_BUCKET_CLIPS=${MINIO_BUCKET_CLIPS:-nextsec-clips}
+      - MINIO_BUCKET_ANALYTICS=${MINIO_BUCKET_ANALYTICS:-nextsec-analytics}
+      # Storage adapter — destino final do clipe/frame (ver ADR-010)
+      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-google_drive}
+      - GOOGLE_DRIVE_CREDENTIALS_JSON=${GOOGLE_DRIVE_CREDENTIALS_JSON:-}
+      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID:-}
+      # Channel adapter — canal de notificação (ver ADR-009)
+      - NOTIFICATION_CHANNEL=${NOTIFICATION_CHANNEL:-whatsapp}
+      - ARCANUM_BASE_URL=${ARCANUM_BASE_URL:-http://arcanum:3100}
+      - ARCANUM_INSTANCE_NAME=${ARCANUM_INSTANCE_NAME:-next-sec}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - VMS_API_KEY=${VMS_API_KEY:-dev-analytics-key}
+    volumes:
+      - ./api:/app
+      - snapshots:/snapshots
+      - reports:/reports
+      - tunnel_data:/tunnel:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [next_sec]
+
+  # ─── Worker (ARQ background tasks — notificações, audit, lgpd, eventos) ──
+  worker:
+    build:
+      context: ./api
+      target: production
+    restart: unless-stopped
+    command: python -m arq vms.worker.WorkerSettings
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-next_sec}:${POSTGRES_PASSWORD:-next_sec_dev}@postgres:5432/${POSTGRES_DB:-next_sec}
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-next_sec}:${RABBITMQ_PASSWORD:-next_sec_dev}@rabbitmq:5672/
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-change-in-prod}
+      - MEDIAMTX_API_URL=http://mediamtx:9997
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-miniosecret}
+      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-google_drive}
+      - NOTIFICATION_CHANNEL=${NOTIFICATION_CHANNEL:-whatsapp}
+      - ARCANUM_BASE_URL=${ARCANUM_BASE_URL:-http://arcanum:3100}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r = redis.Redis(host='redis'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks: [next_sec]
+
+  # ─── Worker Low Priority (Relatórios PDF) ─────────────────────────────────
+  worker-low:
+    build:
+      context: ./api
+      target: production
+    restart: unless-stopped
+    command: python -m arq vms.worker.LowPriorityWorkerSettings
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-next_sec}:${POSTGRES_PASSWORD:-next_sec_dev}@postgres:5432/${POSTGRES_DB:-next_sec}
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-next_sec}:${RABBITMQ_PASSWORD:-next_sec_dev}@rabbitmq:5672/
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-change-in-prod}
+      - REPORTS_PATH=/reports
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - reports:/reports
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [next_sec]
+
+  # ─── Analytics Service (intrusion + face_recognition — analíticos leves) ──
+  analytics:
+    build:
+      context: ./analytics
+      target: ${ANALYTICS_TARGET:-cpu}   # cpu para dev/VPS atual, gpu se migrar depois
+    restart: unless-stopped
+    environment:
+      - VMS_API_URL=http://api:8000
+      - VMS_API_KEY=${VMS_API_KEY:-dev-analytics-key}
+      - MEDIAMTX_HOST=mediamtx
+      - REDIS_URL=redis://redis:6379/1
+      - ANALYTICS_FPS=1
+      - YOLO_IMGSZ=640
+      - YOLO_CONF=0.30
+      - YOLO_MODEL_PATH=/models/object.pt
+      - FACE_RECOGNITION_MODEL_PATH=${FACE_RECOGNITION_MODEL_PATH:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./analytics/models:/models:ro
+      - snapshots:/snapshots
+    depends_on:
+      api:
+        condition: service_healthy
+      mediamtx:
+        condition: service_started
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8001/health').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks: [next_sec]
+
+  # ─── Frontend ─────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    networks: [next_sec]
+
+  # ─── Edge Agent (referência local — roda de fato na rede do cliente) ─────
+  edge-agent:
+    build:
+      context: ./edge_agent
+    restart: unless-stopped
+    environment:
+      - AGENT_ID=edge-agent-01
+      - AGENT_API_KEY=${VMS_API_KEY:-dev-analytics-key}
+      - VMS_API_URL=http://api:8000
+      - MEDIAMTX_RTMP_URL=rtmp://mediamtx:1935
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - edge_agent_data:/app/data
+    depends_on:
+      - api
+      - mediamtx
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('agent running')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [next_sec]
+    profiles: [agent]          # `docker compose --profile agent up` — só para teste local
+
+  # ─── Nginx (reverse proxy) ────────────────────────────────────────────────
+  nginx:
+    build:
+      context: ./infra/nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./infra/nginx/certs:/etc/nginx/certs:ro
+      - ./infra/nginx/certbot:/var/www/certbot:ro
+    depends_on:
+      - api
+      - frontend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks: [next_sec]
+
+  # ─── MinIO (staging S3-compatível de snapshot/clipe antes do storage adapter) ─
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-miniosecret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks: [next_sec]
+
+  # ─── Cloudflare Tunnel (dev — expõe API para teste de webhooks externos) ──
+  cloudflared:
+    build:
+      context: ./infra/cloudflared
+    restart: unless-stopped
+    command: >
+      --url http://nginx:80
+      --protocol http2
+      --no-autoupdate
+    volumes:
+      - tunnel_data:/tunnel
+    depends_on:
+      - nginx
+    profiles: [dev]                  # `docker compose --profile dev up`
+    networks: [next_sec]
+
+  # ─── Backup do Postgres (dados de tenant/evento/audit/LGPD — sem vídeo) ───
+  backup-scheduler:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    entrypoint: >
+      /bin/sh -c "
+        while true; do
+          echo '[$$(date)] Running backup...';
+          PGPASSWORD=$$PGPASSWORD pg_dump -h $$POSTGRES_HOST -p $$POSTGRES_PORT -U $$POSTGRES_USER -d $$POSTGRES_DB | gzip > /backups/nextsec-backup-$$(date +\%Y\%m\%d_\%H\%M\%S).sql.gz;
+          echo '[$$(date)] Backup completed';
+          find /backups -name 'nextsec-backup-*' -mtime +$$RETENTION_DAYS -delete;
+          echo '[$$(date)] Old backups cleaned';
+          sleep 86400;
+        done
+      "
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-next_sec}
+      - POSTGRES_USER=${POSTGRES_USER:-next_sec}
+      - PGPASSWORD=${POSTGRES_PASSWORD:-next_sec_dev}
+      - RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [next_sec]
+
+volumes:
+  pgdata:
+  snapshots:
+  backups:
+  tunnel_data:
+  edge_agent_data:
+  reports:
+  minio_data:
+
+networks:
+  next_sec:
+    driver: bridge

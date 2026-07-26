@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+dist/
+frontend/dist/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Docker / data volumes (bind mounts locais, se usados em dev)
+*.log
+
+# IDE
+.vscode/
+.idea/

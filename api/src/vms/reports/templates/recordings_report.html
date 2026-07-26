@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="info-box">
+    <table>
+        <tr><td>Período:</td><td>{{ params.from }} até {{ params.to }}</td></tr>
+        <tr><td>Gravações:</td><td><strong>{{ recordings|length }}</strong></td></tr>
+        <tr><td>Duração Total:</td><td>{{ total_duration }}</td></tr>
+        <tr><td>Espaço Ocupado:</td><td>{{ total_size }}</td></tr>
+    </table>
+</div>
+
+<h2>Cobertura de Gravação</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Câmera</th>
+            <th>Segmentos</th>
+            <th>Duração</th>
+            <th>Integridade</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for cam_name, stats in coverage_stats.items() %}
+        <tr>
+            <td>{{ cam_name }}</td>
+            <td>{{ stats.count }}</td>
+            <td>{{ stats.duration }}</td>
+            <td>
+                {% if stats.integrity %}
+                <span class="status-badge status-success">Verificada</span>
+                {% else %}
+                <span class="status-badge status-warning">Pendente</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

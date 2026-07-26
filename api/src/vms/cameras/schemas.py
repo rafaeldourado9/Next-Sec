@@ -1,0 +1,272 @@
+"""Schemas Pydantic v2 para o bounded context de câmeras e agents."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from vms.cameras.domain import StreamProtocol, StreamQuality
+
+
+class CreateCameraRequest(BaseModel):
+    """Dados para criação de uma nova câmera."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    location: str | None = Field(default=None, max_length=500)
+    address: str | None = Field(default=None, max_length=500)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    ia_enabled: bool = False
+    manufacturer: str = Field(default="generic")
+    retention_days: int = Field(default=7)
+    stream_quality: str = StreamQuality.HIGH
+    stream_protocol: str = StreamProtocol.RTSP_PULL
+    camera_type: str = Field(default="internal", pattern=r"^(internal|external|lpr|facial)$")
+
+    # rtsp_pull / onvif
+    rtsp_url: str | None = Field(default=None, min_length=10, max_length=2000)
+    agent_id: str | None = None
+
+    # onvif
+    onvif_url: str | None = Field(default=None, min_length=7, max_length=2000)
+    onvif_username: str | None = Field(default=None, max_length=255)
+    onvif_password: str | None = Field(default=None, max_length=500)
+
+    @field_validator("retention_days")
+    @classmethod
+    def validate_retention_days(cls, v: int) -> int:
+        if v not in (5, 15, 30):
+            raise ValueError("retention_days deve ser 5, 15 ou 30")
+        return v
+
+    @field_validator("rtsp_url", mode="before")
+    @classmethod
+    def sanitize_rtsp_url(cls, v: str | None) -> str | None:
+        """Garante que rtsp_url é uma única URL válida, sem espaços ou quebras."""
+        if v is None:
+            return v
+        # Pega apenas a primeira token não-vazio (evita colagem de múltiplas URLs)
+        first = v.strip().split()[0] if v.strip() else v
+        if not first.startswith(("rtsp://", "rtmp://", "http://", "https://")):
+            raise ValueError(
+                "rtsp_url deve ser uma URL válida iniciando com rtsp://, rtmp://, http:// ou https://"
+            )
+        return first
+
+    @model_validator(mode="after")
+    def _validate_protocol_fields(self) -> "CreateCameraRequest":
+        if self.stream_protocol == StreamProtocol.RTSP_PULL:
+            if not self.rtsp_url:
+                raise ValueError("rtsp_url é obrigatório para stream_protocol=rtsp_pull")
+        elif self.stream_protocol == StreamProtocol.ONVIF:
+            if not self.onvif_url:
+                raise ValueError("onvif_url é obrigatório para stream_protocol=onvif")
+        # rtmp_push: nenhum campo adicional obrigatório — stream_key é gerado pelo serviço
+        return self
+
+
+class UpdateCameraRequest(BaseModel):
+    """Dados para atualização parcial de uma câmera."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    location: str | None = None
+    address: str | None = Field(default=None, max_length=500)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    ia_enabled: bool | None = None
+    stream_quality: str | None = None
+    rtsp_url: str | None = Field(default=None, min_length=10, max_length=2000)
+
+    @field_validator("rtsp_url", mode="before")
+    @classmethod
+    def sanitize_rtsp_url(cls, v: str | None) -> str | None:
+        """Garante que rtsp_url é uma única URL válida."""
+        if v is None:
+            return v
+        first = v.strip().split()[0] if v.strip() else v
+        if not first.startswith(("rtsp://", "rtmp://", "http://", "https://")):
+            raise ValueError(
+                "rtsp_url deve ser uma URL válida iniciando com rtsp://, rtmp://, http:// ou https://"
+            )
+        return first
+
+    onvif_url: str | None = Field(default=None, min_length=7, max_length=2000)
+    onvif_username: str | None = Field(default=None, max_length=255)
+    onvif_password: str | None = Field(default=None, max_length=500)
+    manufacturer: str | None = None
+    retention_days: int | None = Field(default=None)
+    camera_type: str | None = Field(default=None, pattern=r"^(internal|external|lpr|facial)$")
+    agent_id: str | None = None
+
+    @field_validator("retention_days")
+    @classmethod
+    def validate_retention_days(cls, v: int | None) -> int | None:
+        if v is not None and v not in (5, 15, 30):
+            raise ValueError("retention_days deve ser 5, 15 ou 30")
+        return v
+
+    is_active: bool | None = None
+
+    # ISAPI
+    isapi_enabled: bool | None = None
+    isapi_base_url: str | None = Field(default=None, max_length=2000)
+    isapi_username: str | None = Field(default=None, max_length=255)
+    isapi_password: str | None = Field(default=None, max_length=500)
+
+
+class CameraResponse(BaseModel):
+    """Resposta com dados completos de uma câmera."""
+
+    model_config = {"from_attributes": True}
+
+    id: str
+    tenant_id: str
+    name: str
+    location: str | None
+    address: str | None
+    latitude: float | None
+    longitude: float | None
+    ia_enabled: bool
+    stream_protocol: str
+    rtsp_url: str | None
+    rtmp_stream_key: str | None
+    onvif_url: str | None
+    onvif_username: str | None
+    manufacturer: str
+    retention_days: int
+    stream_quality: str
+    is_active: bool
+    is_online: bool
+    ptz_supported: bool
+    agent_id: str | None
+    camera_type: str
+    last_seen_at: datetime | None
+    created_at: datetime
+
+    # ISAPI
+    isapi_enabled: bool
+    isapi_base_url: str | None
+    isapi_username: str | None
+    serial_number: str | None
+    firmware_version: str | None
+    model_name: str | None
+    isapi_capabilities: dict
+
+
+class StreamUrlsResponse(BaseModel):
+    """URLs de streaming para um viewer."""
+
+    hls_url: str
+    webrtc_url: str
+    rtsp_url: str | None
+    token: str
+    expires_at: datetime
+
+
+class RtmpConfigResponse(BaseModel):
+    """Configuração RTMP para câmeras push direto."""
+
+    rtmp_url: str
+    stream_key: str
+
+
+class OnvifProbeRequest(BaseModel):
+    """Dados para probe ONVIF de uma câmera."""
+
+    onvif_url: str = Field(..., min_length=7, max_length=2000)
+    username: str = Field(..., min_length=1, max_length=255)
+    password: str = Field(..., min_length=1, max_length=500)
+
+
+class OnvifProbeResponse(BaseModel):
+    """Resultado do probe ONVIF."""
+
+    reachable: bool
+    manufacturer: str | None = None
+    model: str | None = None
+    rtsp_url: str | None = None
+    snapshot_url: str | None = None
+    error: str | None = None
+
+
+class DiscoverOnvifRequest(BaseModel):
+    """Parâmetros para WS-Discovery de câmeras ONVIF na rede."""
+
+    subnet: str | None = Field(
+        default=None,
+        description="Subnet CIDR para busca (ex: 192.168.1.0/24). Sem este campo usa broadcast.",
+    )
+    timeout_seconds: int = Field(default=3, ge=1, le=10)
+
+
+class DiscoveredCamera(BaseModel):
+    """Câmera descoberta via WS-Discovery."""
+
+    onvif_url: str
+    manufacturer: str | None = None
+    model: str | None = None
+    ip: str
+
+
+class DiscoverOnvifResponse(BaseModel):
+    """Resultado da descoberta de câmeras ONVIF."""
+
+    cameras: list[DiscoveredCamera]
+    duration_ms: int
+
+
+class CreateAgentRequest(BaseModel):
+    """Dados para criação de um novo agent."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class AgentResponse(BaseModel):
+    """Resposta com dados de um agent."""
+
+    model_config = {"from_attributes": True}
+
+    id: str
+    name: str
+    status: str
+    last_heartbeat_at: datetime | None
+    version: str | None
+    streams_running: int
+    streams_failed: int
+    created_at: datetime
+
+
+class CreateAgentResponse(AgentResponse):
+    """Resposta de criação de agent — inclui a API key em texto plano (única vez)."""
+
+    api_key: str = Field(
+        ..., description="API key em texto plano. Guarde — não será exibida novamente."
+    )
+
+
+class CameraConfigItem(BaseModel):
+    """Item de configuração de câmera para o agent."""
+
+    id: str
+    name: str
+    rtsp_url: str
+    rtmp_push_url: str
+    enabled: bool
+
+
+class AgentConfigResponse(BaseModel):
+    """Configuração completa do agent — retornada no endpoint /agents/me/config."""
+
+    agent_id: str
+    cameras: list[CameraConfigItem]
+
+
+class HeartbeatRequest(BaseModel):
+    """Dados de heartbeat enviados pelo agent."""
+
+    version: str = Field(..., min_length=1, max_length=50)
+    streams_running: int = Field(..., ge=0)
+    streams_failed: int = Field(..., ge=0)
+    uptime_seconds: int = Field(..., ge=0)

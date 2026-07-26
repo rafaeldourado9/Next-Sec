@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<h2>{{ title }}</h2>
+
+<p>Período: {{ params.get('period_days', 7) }} dias</p>
+<p>Total de eventos: {{ total_events }}</p>
+
+<h3>Resumo por Plugin</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Plugin</th>
+      <th>Contagem</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for plugin, count in summary.items() %}
+    <tr>
+      <td>{{ plugin }}</td>
+      <td>{{ count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3>Eventos Detalhados</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Data/Hora</th>
+      <th>Câmera</th>
+      <th>Plugin</th>
+      <th>Tipo</th>
+      <th>Confiança</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for event in analytics_events %}
+    <tr>
+      <td>{{ event.occurred_at.strftime('%d/%m/%Y %H:%M:%S') }}</td>
+      <td>{{ event.camera_id }}</td>
+      <td>{{ event.plugin_name or '-' }}</td>
+      <td>{{ event.event_type or '-' }}</td>
+      <td>{{ event.confidence or '-' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

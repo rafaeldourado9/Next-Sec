@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<h2>{{ title }}</h2>
+
+<p>Período: {{ params.get('period_days', 7) }} dias</p>
+<p>Total de registros: {{ total_logs }}</p>
+
+<h3>Resumo por Ação</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Ação</th>
+      <th>Contagem</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for action, count in summary.items() %}
+    <tr>
+      <td>{{ action }}</td>
+      <td>{{ count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3>Log Detalhado</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Data/Hora</th>
+      <th>Usuário</th>
+      <th>Ação</th>
+      <th>Recurso</th>
+      <th>IP</th>
+      <th>Resultado</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for log in audit_logs %}
+    <tr>
+      <td>{{ log.occurred_at.strftime('%d/%m/%Y %H:%M:%S') }}</td>
+      <td>{{ log.user_email or 'Sistema' }}</td>
+      <td>{{ log.action }}</td>
+      <td>{{ log.resource_type or '-' }}:{{ log.resource_id or '-' }}</td>
+      <td>{{ log.ip_address or '-' }}</td>
+      <td>{{ log.result }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

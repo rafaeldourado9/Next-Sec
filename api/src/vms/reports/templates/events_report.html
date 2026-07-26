@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="info-box">
+    <table>
+        <tr><td>Período:</td><td>{{ params.from }} até {{ params.to }}</td></tr>
+        {% if params.camera_id %}
+        <tr><td>Câmera:</td><td>{{ params.camera_name }}</td></tr>
+        {% else %}
+        <tr><td>Câmeras:</td><td>Todas</td></tr>
+        {% endif %}
+        <tr><td>Total de Eventos:</td><td><strong>{{ events|length }}</strong></td></tr>
+    </table>
+</div>
+
+<h2>Resumo por Tipo</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Tipo de Evento</th>
+            <th>Ocorrências</th>
+            <th>Porcentagem</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for type_name, count in summary.items() %}
+        <tr>
+            <td>{{ type_name }}</td>
+            <td>{{ count }}</td>
+            <td>{{ "%.1f"|format((count / total_events) * 100) }}%</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h2>Últimos 50 Eventos</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Data/Hora</th>
+            <th>Câmera</th>
+            <th>Tipo</th>
+            <th>Detalhes</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for event in events[:50] %}
+        <tr>
+            <td>{{ event.occurred_at.strftime("%d/%m/%Y %H:%M:%S") }}</td>
+            <td>{{ event.camera_name }}</td>
+            <td>{{ event.event_type }}</td>
+            <td>{{ event.plate or '-' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

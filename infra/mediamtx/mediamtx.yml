@@ -1,0 +1,165 @@
+###############################################
+# MediaMTX — VMS MVP
+# Versão: 1.x
+# Câmeras adicionadas dinamicamente via API (/v3/config/paths/add/{name})
+###############################################
+
+# ─── Global ──────────────────────────────────────────────────────────────────
+
+logLevel: info
+logDestinations: [stdout]
+
+readTimeout: 120s
+writeTimeout: 120s
+writeQueueSize: 524288
+udpMaxPayloadSize: 1472
+
+# ─── Auth ─────────────────────────────────────────────────────────────────────
+# Publish (agent push / câmera RTMP push) → validado pelo VMS
+# Read (HLS / WebRTC viewers) → validado pelo VMS via token query param
+
+authMethod: http
+authHTTPAddress: http://api:8000/streaming/publish-auth
+
+# Leitura requer validação de viewer token
+# MediaMTX ≥ 1.3: usar authHTTPAddress para publish + read
+# Ações excluídas da validação (internas):
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+  - action: playback   # VOD — URL gerada pelo backend (autenticado) funciona como pre-signed URL
+  - action: read       # HLS/WebRTC viewers — proteção real é no backend (stream-urls requer JWT)
+
+# ─── Control API ─────────────────────────────────────────────────────────────
+
+api: yes
+apiAddress: :9997
+apiEncryption: no
+apiAllowOrigins: ["*"]
+apiTrustedProxies: []
+
+# ─── Metrics ──────────────────────────────────────────────────────────────────
+
+metrics: yes
+metricsAddress: :9998
+metricsEncryption: no
+metricsAllowOrigins: ["*"]
+
+# ─── RTSP ────────────────────────────────────────────────────────────────────
+
+rtsp: yes
+rtspTransports: [tcp, udp]
+rtspEncryption: "no"
+rtspAddress: :8554
+rtspAuthMethods: [basic]
+
+# ─── RTMP ────────────────────────────────────────────────────────────────────
+# Câmeras RTMP push enviam para rtmp://host:1935/tenant-{id}/cam-{id}?key={stream_key}
+# O publish-auth hook valida o stream_key contra o banco.
+
+rtmp: yes
+rtmpAddress: :1935
+rtmpEncryption: "no"
+
+# ─── HLS ─────────────────────────────────────────────────────────────────────
+# Low-latency HLS (fmp4 + part duration 200ms)
+# Viewers chegam com ?token=<viewer_jwt> — query string propagada nos segmentos.
+
+hls: yes
+hlsAddress: :8888
+hlsEncryption: no
+hlsAllowOrigins: ["*"]
+hlsTrustedProxies: []
+hlsAlwaysRemux: no
+hlsVariant: fmp4
+hlsSegmentCount: 3
+hlsSegmentDuration: 2s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 10M
+hlsDirectory: ""
+hlsMuxerCloseAfter: 60s
+
+# ─── WebRTC ──────────────────────────────────────────────────────────────────
+# WHEP endpoint: GET /webrtc/{path}/whep
+# ICE: STUN público + TURN opcional (configurar via .env para NAT simétrico)
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: no
+webrtcAllowOrigins: ["*"]
+webrtcTrustedProxies: []
+webrtcLocalUDPAddress: :8189
+webrtcIPsFromInterfaces: yes
+webrtcIPsFromInterfacesList: []
+webrtcHandshakeTimeout: 10s
+webrtcTrackGatherTimeout: 2s
+webrtcSTUNGatherTimeout: 5s
+
+# ICE servers — sobrescrever via env se TURN_URL estiver configurado
+webrtcICEServers2:
+  - url: stun:stun.l.google.com:19302
+  # - url: turn:<TURN_HOST>:3478
+  #   username: <TURN_USER>
+  #   password: <TURN_CRED>
+
+# ─── Playback ────────────────────────────────────────────────────────────────
+# Servidor de VOD do MediaMTX — serve fMP4 gravados como HLS.
+# URL: GET /get?path=tenant-{id}/cam-{id}&start=RFC3339&end=RFC3339
+# Nginx expõe em /mediamtx-playback/ → mediamtx:9996
+
+playback: yes
+playbackAddress: :9996
+
+# ─── SRT (desabilitado no MVP) ───────────────────────────────────────────────
+
+srt: no
+
+# ─── Path Defaults ───────────────────────────────────────────────────────────
+
+pathDefaults:
+  source: publisher
+  sourceOnDemand: no
+  maxReaders: 100
+
+  # ── Gravação 24/7 ──────────────────────────────────────────────────────────
+  record: yes
+  # NOTA: recordPath NÃO deve ter extensão — MediaMTX adiciona baseado no recordFormat
+  # %f = microseconds — obrigatório no MediaMTX v1.17+ para garantir unicidade
+  recordPath: /recordings/%path/%Y/%m/%d/%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 10s
+  recordSegmentDuration: 60s
+  recordDeleteAfter: 0s    # 0 = nunca deletar automaticamente (VMS controla retenção)
+
+  # ── Hooks de status de stream ──────────────────────────────────────────────
+  # on_ready: câmera ficou online → VMS marca camera.is_online = True
+  runOnReady: >-
+    curl -s -X POST http://api:8000/api/v1/webhooks/mediamtx/on_ready
+    -H "Content-Type: application/json"
+    -d "{\"path\":\"$MTX_PATH\",\"source_type\":\"$MTX_SOURCE_TYPE\",\"source_id\":\"$MTX_SOURCE_ID\"}"
+  runOnReadyRestart: no
+
+  # on_not_ready: câmera ficou offline → VMS marca camera.is_online = False
+  runOnNotReady: >-
+    curl -s -X POST http://api:8000/api/v1/webhooks/mediamtx/on_not_ready
+    -H "Content-Type: application/json"
+    -d "{\"path\":\"$MTX_PATH\",\"source_type\":\"$MTX_SOURCE_TYPE\",\"source_id\":\"$MTX_SOURCE_ID\"}"
+
+  # on_read: viewer conectou — para métricas de audiência (opcional)
+  runOnRead: ""
+  runOnUnread: ""
+
+  # ── Hook de segmento pronto ────────────────────────────────────────────────
+  # Disparado a cada 60s quando segmento de gravação é completado.
+  # VMS indexa o segmento (RecordingSegment) e verifica retenção.
+  runOnRecordSegmentComplete: >-
+    curl -s -X POST http://api:8000/api/v1/webhooks/mediamtx/segment_ready
+    -H "Content-Type: application/json"
+    -d "{\"path\":\"$MTX_PATH\",\"segment_path\":\"$MTX_SEGMENT_PATH\",\"duration\":\"$MTX_SEGMENT_DURATION\"}"
+
+# ─── Paths estáticos ──────────────────────────────────────────────────────────
+# Câmeras adicionadas dinamicamente pelo cameras/mediamtx.py via API v3.
+# Não há paths estáticos — tudo é provisionado sob demanda.
+
+paths: {}

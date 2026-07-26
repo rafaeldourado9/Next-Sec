@@ -1,0 +1,100 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vms-api"
+version = "1.0.0"
+description = "VMS MVP — Core API"
+requires-python = ">=3.12"
+dependencies = [
+    # Web framework
+    "fastapi[standard]>=0.115",
+    "uvicorn[standard]>=0.32",
+    # ORM + DB
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "psycopg2-binary>=2.9",  # Necessário para migrações do Alembic (modo sync)
+    # Validação
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    # Auth
+    "python-jose[cryptography]>=3.3",
+    "bcrypt>=4.2",
+    # Cache / PubSub
+    "redis[asyncio]>=5.2",
+    # Message bus
+    "aio-pika>=9.5",
+    # Background tasks
+    "arq>=0.26",
+    # HTTP client
+    "httpx>=0.28",
+    # Rate limiting
+    "slowapi>=0.1",
+    # Logging
+    "structlog>=24.4",
+    # Utilitários
+    "python-multipart>=0.0.12",
+    # Relatórios (Sprint 10)
+    "weasyprint>=61.0",
+    "jinja2>=3.1",
+    # Object Storage
+    "boto3>=1.35",
+    # Frame extraction / Analytics
+    "opencv-python>=4.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-bdd>=7.3",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "factory-boy>=3.3",
+    "faker>=33.0",
+    "anyio>=4.7",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-passlib",
+    "aiosqlite>=0.21",
+    "moto[server]>=5.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vms"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra -m 'not e2e'"
+markers = [
+    "e2e: testes de integração fim-a-fim (requer docker compose up)",
+    "unit: testes unitários",
+    "integration: testes de integração (requer DB)",
+    "bdd: testes BDD",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "TCH"]
+ignore = ["B008", "N818"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.coverage.run]
+source = ["src/vms"]
+omit = ["*/migrations/*", "*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80

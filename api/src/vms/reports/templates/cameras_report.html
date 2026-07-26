@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="info-box">
+    <table>
+        <tr><td>Total de Câmeras:</td><td><strong>{{ cameras|length }}</strong></td></tr>
+        <tr><td>Online:</td><td><span class="status-badge status-success">{{ online_count }}</span></td></tr>
+        <tr><td>Offline:</td><td><span class="status-badge status-error">{{ offline_count }}</span></td></tr>
+    </table>
+</div>
+
+<h2>Status das Câmeras</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Nome</th>
+            <th>Localização</th>
+            <th>Status</th>
+            <th>Fabricante</th>
+            <th>Última Atividade</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for camera in cameras %}
+        <tr>
+            <td><strong>{{ camera.name }}</strong></td>
+            <td>{{ camera.location or 'N/A' }}</td>
+            <td>
+                {% if camera.is_online %}
+                <span class="status-badge status-success">Online</span>
+                {% else %}
+                <span class="status-badge status-error">Offline</span>
+                {% endif %}
+            </td>
+            <td>{{ camera.manufacturer }}</td>
+            <td>{{ camera.last_seen_at.strftime("%d/%m/%Y %H:%M:%S") if camera.last_seen_at else 'N/A' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,201 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg:       #0A0A0F;
+  --surface:  #111118;
+  --elevated: #1A1A24;
+  --border:   #252530;
+  --accent:   #3B82F6;
+  --text-1:   #F4F4F5;
+  --text-2:   #A1A1AA;
+  --text-3:   #52525B;
+  --success:  #22C55E;
+  --warning:  #F59E0B;
+  --danger:   #EF4444;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  background-color: var(--bg);
+  color: var(--text-1);
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* Focus ring global */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    background-color: var(--accent);
+    @apply text-white hover:opacity-90 active:scale-95;
+  }
+  .btn-ghost {
+    @apply text-t2 hover:bg-elevated hover:text-t1 active:scale-95;
+  }
+  .btn-danger {
+    background-color: var(--danger);
+    @apply text-white hover:opacity-90 active:scale-95;
+  }
+  .card {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    @apply rounded-xl;
+  }
+  .input {
+    background-color: var(--elevated);
+    border: 1px solid var(--border);
+    @apply w-full rounded-lg px-3 py-2 text-sm text-t1 placeholder-t3 transition-colors;
+  }
+  .input:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
+  .select {
+    background-color: var(--elevated);
+    border: 1px solid var(--border);
+    color: var(--text-1);
+    @apply w-full rounded-lg px-3 py-2 text-sm transition-colors;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2352525b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 2rem;
+  }
+  .select:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
+  .select option {
+    background-color: var(--elevated);
+    color: var(--text-1);
+  }
+  .label {
+    @apply block text-xs font-medium text-t2 mb-1.5;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: scale(0.96) translateY(-8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-fade-in  { animation: fade-in  0.15s ease-out; }
+.animate-slide-in { animation: slide-in 0.15s ease-out; }
+
+/* ── Leaflet Tactical Map ─────────────────────────────────────────────────── */
+.leaflet-container {
+  background: #0A0A0F;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* Popup: dark theme */
+.vms-popup .leaflet-popup-content-wrapper {
+  background: #111118;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.04);
+  border-radius: 12px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.vms-popup .leaflet-popup-content {
+  margin: 0;
+  line-height: normal;
+}
+
+.vms-popup .leaflet-popup-tip {
+  background: #111118;
+  box-shadow: none;
+}
+
+/* Zoom controls: dark */
+.leaflet-control-zoom {
+  border: 1px solid rgba(255,255,255,0.08) !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
+}
+
+.leaflet-control-zoom a {
+  background: #111118 !important;
+  color: #71717a !important;
+  border-bottom: 1px solid rgba(255,255,255,0.06) !important;
+  width: 30px !important;
+  height: 30px !important;
+  line-height: 30px !important;
+  font-size: 16px !important;
+  font-weight: 300 !important;
+  transition: all 0.15s;
+}
+
+.leaflet-control-zoom a:last-child {
+  border-bottom: none !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background: #1A1A24 !important;
+  color: #f4f4f5 !important;
+}
+
+/* Camera marker animation */
+@keyframes vms-ring-green {
+  0%   { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+@keyframes vms-ring-red {
+  0%   { transform: scale(1); opacity: 0.5; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+.vms-marker { background: transparent !important; border: none !important; }
+
+.vms-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  animation-duration: 2s;
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-out;
+  pointer-events: none;
+}
+
+.vms-ring-green { background: rgba(34,197,94,0.4); animation-name: vms-ring-green; }
+.vms-ring-red   { background: rgba(239,68,68,0.35); animation-name: vms-ring-red; }
+
+/* Leaflet DivIcon: remove white background */
+.leaflet-div-icon { background: transparent !important; border: none !important; }
+
+/* Ping animation for online cameras (used in DivIcon SVG) */
+@keyframes ping {
+  75%, 100% { transform: scale(2); opacity: 0; }
+}
