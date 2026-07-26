@@ -24,29 +24,16 @@ class AnalyticsService:
     # ─── Plugin Installations ─────────────────────────────────────────────
 
     async def list_installations(self, tenant_id: uuid.UUID) -> list[PluginInstallation]:
-        """Lista plugins instalados do tenant."""
-        result = await self.db.execute(
-            select(PluginInstallation)
-            .where(
-                PluginInstallation.tenant_id == str(tenant_id),
-                PluginInstallation.plugin_id == plugin_id,
-            )
-            .limit(1)
-        )
-        installation = result.scalar_one_or_none()
+        """Lista plugins instalados do tenant.
 
-        event = AnalyticsEvent(
-            plugin_installation_id=str(installation.id) if installation else None,
-            tenant_id=str(tenant_id),
-            plugin_id=plugin_id,
-            camera_id=camera_id,
-            camera_name=camera_name,
-            event_type=event_type,
-            severity=severity,
-            confidence=confidence,
-            payload=payload,
-            snapshot_path=snapshot_path,
-            occurred_at=occurred_at or datetime.utcnow(),
+        NOTA: este método estava corrompido no código herdado (corpo colado
+        de `create_event`, referenciava `plugin_id`/`camera_id` inexistentes
+        e chamaria `result.scalars()` duas vezes sobre o mesmo resultado —
+        daria NameError em qualquer chamada real). Corrigido durante o
+        Sprint 2 do Next Sec.
+        """
+        result = await self.db.execute(
+            select(PluginInstallation).where(PluginInstallation.tenant_id == str(tenant_id))
         )
         return list(result.scalars().all())
 

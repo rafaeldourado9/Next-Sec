@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { X, Save, Loader2 } from 'lucide-react'
-import { analyticsService, type ROI, type AnalyticsCatalogItem } from '@/services/analytics'
+import { X, Save, Loader2, Trash2, Plus } from 'lucide-react'
+import { analyticsService, type ROI, type AnalyticsCatalogItem, type ROISchedule } from '@/services/analytics'
 import { PLUGIN_NAMES } from '@/constants/plugins'
 import { POLYGON_REQUIRED, PLUGIN_CONFIG_SCHEMA } from '@/constants/pluginConfigs'
 import { PolygonEditor } from './PolygonEditor'
@@ -8,6 +8,8 @@ import { PluginConfigForm } from './PluginConfigForm'
 import { camerasService } from '@/services/cameras'
 import type { Camera } from '@/types'
 import toast from 'react-hot-toast'
+
+const DAY_LABELS = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo']
 
 interface Props {
   roi?: ROI
@@ -29,6 +31,52 @@ export function ROIEditorPanel({ roi, cameras, plugins, onSave, onCancel, defaul
   const [saving, setSaving] = useState(false)
   const [streamUrl, setStreamUrl] = useState<string | null>(null)
   const [streamReady, setStreamReady] = useState(false) // Bug 5: controle de carregamento do stream
+
+  // ── Horário de ativação (roi_schedules) — só disponível editando uma ROI já criada ──
+  const [schedules, setSchedules] = useState<ROISchedule[]>([])
+  const [newDayOfWeek, setNewDayOfWeek] = useState<string>('')
+  const [newStartTime, setNewStartTime] = useState('20:30')
+  const [newEndTime, setNewEndTime] = useState('06:00')
+  const [addingSchedule, setAddingSchedule] = useState(false)
+
+  const loadSchedules = () => {
+    if (!roi) return
+    analyticsService.listROISchedules(roi.id).then(setSchedules).catch(() => setSchedules([]))
+  }
+
+  useEffect(() => {
+    loadSchedules()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roi?.id])
+
+  const handleAddSchedule = async () => {
+    if (!roi || !newStartTime || !newEndTime) return
+    setAddingSchedule(true)
+    try {
+      await analyticsService.createROISchedule(roi.id, {
+        day_of_week: newDayOfWeek === '' ? null : Number(newDayOfWeek),
+        start_time: newStartTime,
+        end_time: newEndTime,
+      })
+      toast.success('Horário adicionado')
+      loadSchedules()
+    } catch {
+      toast.error('Erro ao adicionar horário')
+    } finally {
+      setAddingSchedule(false)
+    }
+  }
+
+  const handleDeleteSchedule = async (scheduleId: string) => {
+    if (!roi) return
+    try {
+      await analyticsService.deleteROISchedule(roi.id, scheduleId)
+      toast.success('Horário removido')
+      loadSchedules()
+    } catch {
+      toast.error('Erro ao remover horário')
+    }
+  }
 
   // Bug 6: sincroniza estado quando a ROI selecionada muda; reseta ao entrar em modo criação
   useEffect(() => {
@@ -217,6 +265,89 @@ export function ROIEditorPanel({ roi, cameras, plugins, onSave, onCancel, defaul
               config={config}
               onChange={setConfig}
             />
+          </div>
+        )}
+
+        {/* Horário de ativação — só disponível depois que a ROI foi criada */}
+        {isEdit && roi && (
+          <div>
+            <label className="text-xs text-t3 mb-1 block">
+              Horário de ativação
+              <span className="text-t3 ml-1">(sem horário = sempre armada)</span>
+            </label>
+
+            {schedules.length > 0 && (
+              <div className="space-y-1.5 mb-2">
+                {schedules.map((s) => (
+                  <div
+                    key={s.id}
+                    className="flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-xs"
+                    style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+                  >
+                    <span className="text-t2">
+                      {s.day_of_week === null ? 'Todo dia' : DAY_LABELS[s.day_of_week]}
+                      {' · '}
+                      {s.start_time.slice(0, 5)} – {s.end_time.slice(0, 5)}
+                    </span>
+                    <button
+                      onClick={() => handleDeleteSchedule(s.id)}
+                      className="text-t3 hover:text-danger transition"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <label className="text-[10px] text-t3 mb-1 block">Dia</label>
+                <select
+                  value={newDayOfWeek}
+                  onChange={(e) => setNewDayOfWeek(e.target.value)}
+                  className="w-full px-2 py-1.5 rounded-lg border text-xs text-t1 outline-none"
+                  style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+                >
+                  <option value="">Todo dia</option>
+                  {DAY_LABELS.map((label, idx) => (
+                    <option key={idx} value={idx}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] text-t3 mb-1 block">Início</label>
+                <input
+                  type="time"
+                  value={newStartTime}
+                  onChange={(e) => setNewStartTime(e.target.value)}
+                  className="px-2 py-1.5 rounded-lg border text-xs text-t1 outline-none"
+                  style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-t3 mb-1 block">Fim</label>
+                <input
+                  type="time"
+                  value={newEndTime}
+                  onChange={(e) => setNewEndTime(e.target.value)}
+                  className="px-2 py-1.5 rounded-lg border text-xs text-t1 outline-none"
+                  style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+                />
+              </div>
+              <button
+                onClick={handleAddSchedule}
+                disabled={addingSchedule || !newStartTime || !newEndTime}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-white transition disabled:opacity-40"
+                style={{ background: 'var(--accent)' }}
+              >
+                <Plus size={13} />
+              </button>
+            </div>
+            <p className="text-[10px] text-t3 mt-1">
+              Fim antes do início (ex: 20:30 → 06:00) cria uma janela que vira a meia-noite.
+              Adicione mais de um horário para múltiplos turnos no mesmo dia.
+            </p>
           </div>
         )}
       </div>

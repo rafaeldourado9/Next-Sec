@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, SmallInteger, String, Time, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -28,6 +28,23 @@ class AnalyticsROI(Base):
     # Polígono normalizado: [[x, y], ...] onde x, y ∈ [0, 1]
     polygon: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class ROISchedule(Base):
+    """Horário de ativação (turno) de uma ROI — múltiplos por ROI."""
+
+    __tablename__ = "roi_schedules"
+
+    id: Mapped[str] = mapped_column(_UUID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    roi_id: Mapped[str] = mapped_column(
+        _UUID_TYPE, ForeignKey("analytics_rois.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    day_of_week: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    start_time: Mapped[time] = mapped_column(Time(), nullable=False)
+    end_time: Mapped[time] = mapped_column(Time(), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

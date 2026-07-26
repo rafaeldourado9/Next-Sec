@@ -53,6 +53,21 @@ export interface ROICreatePayload {
   config?: Record<string, unknown>
 }
 
+export interface ROISchedule {
+  id: string
+  roi_id: string
+  day_of_week: number | null
+  start_time: string
+  end_time: string
+  is_active: boolean
+}
+
+export interface ROIScheduleCreatePayload {
+  day_of_week?: number | null
+  start_time: string
+  end_time: string
+}
+
 export const analyticsService = {
   getCatalog: async (): Promise<AnalyticsCatalogItem[]> => {
     const { data } = await api.get<AnalyticsCatalogItem[]>('/analytics/catalog')
@@ -95,5 +110,22 @@ export const analyticsService = {
 
   deleteROI: async (id: string): Promise<void> => {
     await api.delete(`/analytics/rois/${id}`)
+  },
+
+  listROISchedules: async (roiId: string): Promise<ROISchedule[]> => {
+    const { data } = await api.get<ROISchedule[]>(`/analytics/rois/${roiId}/schedules`)
+    return data
+  },
+
+  createROISchedule: async (
+    roiId: string,
+    payload: ROIScheduleCreatePayload,
+  ): Promise<ROISchedule> => {
+    const { data } = await api.post<ROISchedule>(`/analytics/rois/${roiId}/schedules`, payload)
+    return data
+  },
+
+  deleteROISchedule: async (roiId: string, scheduleId: string): Promise<void> => {
+    await api.delete(`/analytics/rois/${roiId}/schedules/${scheduleId}`)
   },
 }

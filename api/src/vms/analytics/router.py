@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, time, timezone, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from vms.shared.api.dependencies import CurrentUser, DbSession, GestorUser
 from vms.analytics.service import AnalyticsService
@@ -408,6 +408,24 @@ class ROIResponse(BaseModel):
     created_at: datetime
 
 
+class CreateROIScheduleRequest(BaseModel):
+    """Horário de ativação (turno) para uma ROI. Ver ADR desenvolvido no manifest:
+    múltiplos turnos/dia, dia da semana opcional (null = todo dia)."""
+
+    day_of_week: int | None = Field(default=None, ge=0, le=6)
+    start_time: time
+    end_time: time
+
+
+class ROIScheduleResponse(BaseModel):
+    id: str
+    roi_id: str
+    day_of_week: int | None
+    start_time: time
+    end_time: time
+    is_active: bool
+
+
 @router.get("/rois", response_model=list[ROIResponse])
 async def list_rois(
     db: DbSession,
@@ -582,6 +600,114 @@ async def delete_roi(
         raise HTTPException(status_code=404, detail="ROI não encontrada")
     roi_cache.invalidate(str(tenant_id), roi.camera_id)
     await db.delete(roi)
+
+
+# ─── Horários de ativação da ROI (roi_schedules) ──────────────────────────────
+
+async def _get_roi_or_404(db: DbSession, roi_id: uuid.UUID, tenant_id: str):  # noqa: ANN001, ANN202
+    from sqlalchemy import select
+    from vms.analytics.models import AnalyticsROI
+
+    result = await db.execute(
+        select(AnalyticsROI).where(
+            AnalyticsROI.id == roi_id,
+            AnalyticsROI.tenant_id == tenant_id,
+        )
+    )
+    roi = result.scalar_one_or_none()
+    if not roi:
+        raise HTTPException(status_code=404, detail="ROI não encontrada")
+    return roi
+
+
+@router.get("/rois/{roi_id}/schedules", response_model=list[ROIScheduleResponse])
+async def list_roi_schedules(
+    roi_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> list[ROIScheduleResponse]:
+    """Lista os horários de ativação de uma zona."""
+    from sqlalchemy import select
+    from vms.analytics.models import ROISchedule
+
+    tenant_id = _get_tenant_id(current_user)
+    await _get_roi_or_404(db, roi_id, tenant_id)
+
+    result = await db.execute(
+        select(ROISchedule).where(ROISchedule.roi_id == str(roi_id))
+    )
+    return [
+        ROIScheduleResponse(
+            id=str(s.id), roi_id=s.roi_id, day_of_week=s.day_of_week,
+            start_time=s.start_time, end_time=s.end_time, is_active=s.is_active,
+        )
+        for s in result.scalars().all()
+    ]
+
+
+@router.post(
+    "/rois/{roi_id}/schedules", response_model=ROIScheduleResponse, status_code=201
+)
+async def create_roi_schedule(
+    roi_id: uuid.UUID,
+    body: CreateROIScheduleRequest,
+    db: DbSession,
+    current_user: GestorUser,
+) -> ROIScheduleResponse:
+    """Adiciona um horário de ativação (turno) a uma zona.
+
+    Suporta janelas que cruzam a meia-noite (ex: start_time=20:30,
+    end_time=06:00) — a avaliação em `vms.analytics.schedule.is_armed_now`
+    já trata esse caso.
+    """
+    from vms.analytics.models import ROISchedule
+    from vms.plugins import roi_cache
+
+    tenant_id = _get_tenant_id(current_user)
+    roi = await _get_roi_or_404(db, roi_id, tenant_id)
+
+    schedule = ROISchedule(
+        roi_id=str(roi_id),
+        day_of_week=body.day_of_week,
+        start_time=body.start_time,
+        end_time=body.end_time,
+    )
+    db.add(schedule)
+    await db.flush()
+
+    roi_cache.invalidate(str(tenant_id), roi.camera_id)
+    return ROIScheduleResponse(
+        id=str(schedule.id), roi_id=schedule.roi_id, day_of_week=schedule.day_of_week,
+        start_time=schedule.start_time, end_time=schedule.end_time, is_active=schedule.is_active,
+    )
+
+
+@router.delete("/rois/{roi_id}/schedules/{schedule_id}", status_code=204)
+async def delete_roi_schedule(
+    roi_id: uuid.UUID,
+    schedule_id: uuid.UUID,
+    db: DbSession,
+    current_user: GestorUser,
+) -> None:
+    """Remove um horário de ativação de uma zona."""
+    from sqlalchemy import select
+    from vms.analytics.models import ROISchedule
+    from vms.plugins import roi_cache
+
+    tenant_id = _get_tenant_id(current_user)
+    roi = await _get_roi_or_404(db, roi_id, tenant_id)
+
+    result = await db.execute(
+        select(ROISchedule).where(
+            ROISchedule.id == str(schedule_id), ROISchedule.roi_id == str(roi_id)
+        )
+    )
+    schedule = result.scalar_one_or_none()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Horário não encontrado")
+
+    await db.delete(schedule)
+    roi_cache.invalidate(str(tenant_id), roi.camera_id)
 
 
 @router.get("/stats", response_model=AnalyticsStatsResponse)

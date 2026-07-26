@@ -236,7 +236,8 @@ async def list_plugin_rois(
         return cached
 
     from sqlalchemy import select
-    from vms.analytics.models import AnalyticsROI
+    from vms.analytics.models import AnalyticsROI, ROISchedule
+    from vms.analytics.schedule import is_armed_now
 
     stmt = select(AnalyticsROI).where(
         AnalyticsROI.tenant_id == tenant_id,
@@ -246,17 +247,32 @@ async def list_plugin_rois(
         stmt = stmt.where(AnalyticsROI.camera_id == camera_id)
     result = await db.execute(stmt)
     rois = result.scalars().all()
-    data = [
-        {
+
+    data = []
+    for r in rois:
+        sched_result = await db.execute(
+            select(ROISchedule).where(ROISchedule.roi_id == r.id)
+        )
+        schedules = sched_result.scalars().all()
+        data.append({
             "id": str(r.id),
             "name": r.name,
             "camera_id": r.camera_id,
             "plugin_id": r.plugin_id,
             "polygon_points": r.polygon,
             "config": r.config,
-        }
-        for r in rois
-    ]
+            "schedules": [
+                {
+                    "day_of_week": s.day_of_week,
+                    "start_time": s.start_time.isoformat(),
+                    "end_time": s.end_time.isoformat(),
+                }
+                for s in schedules
+                if s.is_active
+            ],
+            # Zona sem horário cadastrado = sempre armada (comportamento anterior preservado)
+            "is_armed_now": is_armed_now(list(schedules)),
+        })
     roi_cache.set(tenant_id, camera_id, data)
     return data
 

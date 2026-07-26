@@ -6,7 +6,7 @@ import {
   ChevronLeft, ChevronRight, LogOut,
   FileText, ClipboardList, Bot,
   ScanLine, Activity, LineChart,
-  Building2, ShieldCheck,
+  Building2, ShieldCheck, Phone,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/authStore'
@@ -43,6 +43,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: '/reports',        icon: FileText,        label: 'Relatórios' },
       { to: '/audit',          icon: ClipboardList,   label: 'Auditoria' },
       { to: '/lgpd',           icon: ShieldCheck,      label: 'LGPD' },
+      { to: '/contacts',       icon: Phone,           label: 'Contatos' },
       { to: '/notifications',  icon: Bell,            label: 'Notificações' },
       { to: '/agents',         icon: Bot,             label: 'Agentes',       adminOnly: true },
       { to: '/users',          icon: Users,           label: 'Usuários',      adminOnly: true },

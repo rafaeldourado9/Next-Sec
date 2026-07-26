@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { FileText, Download, Plus, RefreshCw, Clock, CheckCircle, XCircle, Loader2, Radio, Bell, Video, Search, Brain } from 'lucide-react'
+import { FileText, Download, Plus, RefreshCw, Clock, CheckCircle, XCircle, Loader2, Radio, Bell, Search, Brain } from 'lucide-react'
 import { format } from 'date-fns'
 import { reportsService, type ReportItem } from '@/services/reports'
 import { PageSpinner } from '@/components/ui/Spinner'
