@@ -84,6 +84,33 @@ async def task_dispatch_notification(
             raise
 
 
+def _draw_bbox_overlay(image_bytes: bytes, bbox: list) -> bytes:
+    """Desenha o retângulo vermelho ao redor do bbox só na cópia enviada por
+    WhatsApp — o arquivo em disco fica limpo (ver
+    `analytics/core/orchestrator.py::_save_snapshot`), pois a box gravada nos
+    pixels atrapalhava o "Analisar Evento" (GFPGAN não achava rosto com a
+    linha cruzando o sujeito). O frontend desenha a box como overlay CSS; o
+    WhatsApp não tem como fazer isso, então precisa vir já gravada na imagem.
+    """
+    import cv2
+    import numpy as np
+
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None or len(bbox) != 4:
+        return image_bytes
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = bbox
+    pt1 = (max(0, int(x1 * w)), max(0, int(y1 * h)))
+    pt2 = (min(w - 1, int(x2 * w)), min(h - 1, int(y2 * h)))
+    thickness = max(2, round(min(w, h) / 300))
+    cv2.rectangle(frame, pt1, pt2, (0, 0, 255), thickness)
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    if not ok:
+        return image_bytes
+    return buf.tobytes()
+
+
 _EVENT_TITLES = {
     "analytics.intrusion.crossed": "🚨 Cerca Virtual",
     "analytics.face.recognized": "👤 Reconhecimento Facial",
@@ -175,6 +202,9 @@ async def task_dispatch_event_notifications(
             if os.path.isfile(full_path):
                 with open(full_path, "rb") as f:
                     image_bytes = f.read()
+                bbox = (payload or {}).get("bbox")
+                if image_bytes and isinstance(bbox, list) and len(bbox) == 4:
+                    image_bytes = _draw_bbox_overlay(image_bytes, bbox)
 
             camera_name = None
             if camera_id:
