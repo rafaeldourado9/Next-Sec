@@ -73,7 +73,10 @@ services:
       - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
       - recordings:/recordings
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9997/v3/config/global/get"]
+      # curl não existe nesta imagem (ver infra/mediamtx/Dockerfile) — só
+      # wget (Alpine/BusyBox). Com curl o healthcheck falhava sempre,
+      # marcando o container "unhealthy" mesmo com o mediamtx saudável.
+      test: ["CMD", "wget", "-qO-", "http://localhost:9997/v3/config/global/get"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -270,7 +273,11 @@ services:
       - api
       - frontend
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      # curl não existe nesta imagem (ver infra/nginx/Dockerfile) — só wget
+      # (Alpine/BusyBox). Path também estava errado (/health não existe;
+      # o proxy expõe /api/v1/health). Com isso o healthcheck falhava
+      # sempre, marcando o container "unhealthy" mesmo com o nginx saudável.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
