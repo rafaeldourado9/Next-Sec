@@ -44,12 +44,11 @@ services:
     networks: [next_sec]
 
   # ─── Arcanum (gateway WhatsApp self-hosted — notificações a contatos, ver ADR-009) ─
-  # Repo irmão em D:\Next\arcanum (fora do next_sec/). Envio apenas — o
-  # ChannelAdapter (notifications/channel_adapter.py) só chama sendText/sendMedia,
-  # não configura webhook de entrada.
+  # Envio apenas — o ChannelAdapter (notifications/channel_adapter.py) só chama
+  # sendText/sendMedia, não configura webhook de entrada.
   arcanum:
     build:
-      context: ../arcanum
+      context: ./arcanum
     restart: unless-stopped
     environment:
       - GATEWAY_PORT=3100
