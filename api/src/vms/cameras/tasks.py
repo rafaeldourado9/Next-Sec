@@ -51,9 +51,17 @@ async def task_camera_watchdog(ctx: dict) -> None:
             entry = by_name.get(mediamtx_path)
 
             if entry is None and source_url:
-                # Path ausente após restart do MediaMTX — re-provisiona
+                # Path ausente após restart do MediaMTX — re-provisiona.
+                # Precisa passar recording_enabled/retention_days — senão um
+                # restart do MediaMTX faria o watchdog "curar" o path só com
+                # o default (record=False), desligando gravação em silêncio.
                 try:
-                    await client.add_path(mediamtx_path, source_url=source_url)
+                    await client.add_path(
+                        mediamtx_path,
+                        source_url=source_url,
+                        recording_enabled=cam.recording_enabled,
+                        retention_days=cam.retention_days,
+                    )
                     logger.info("Re-provisionado path MediaMTX: %s", mediamtx_path)
                 except Exception:
                     logger.warning("Falha ao re-provisionar %s", mediamtx_path, exc_info=True)

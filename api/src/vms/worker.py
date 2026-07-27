@@ -30,6 +30,7 @@ from arq.connections import RedisSettings
 from vms.infrastructure.config import get_settings
 from vms.cameras.tasks import task_camera_watchdog
 from vms.event_clips.tasks import task_cleanup_old_clips
+from vms.recordings.tasks import task_prune_recording_windows
 from vms.notifications.tasks import task_dispatch_event_notifications, task_dispatch_notification
 from vms.reports.tasks import task_auto_monthly_report, task_generate_report
 from vms.audit.tasks import task_ensure_audit_partitions
@@ -67,6 +68,7 @@ async def startup(ctx: dict) -> None:
     from vms.billing.models import LicenseKeyModel  # noqa: F401
     from vms.contacts.models import ContactModel  # noqa: F401
     from vms.event_clips.models import EventClipModel  # noqa: F401
+    from vms.recordings.models import RecordingWindowModel  # noqa: F401
 
     settings = get_settings()
 
@@ -141,6 +143,7 @@ class WorkerSettings:
         task_camera_watchdog,
         task_ensure_audit_partitions,
         task_cleanup_old_clips,
+        task_prune_recording_windows,
     ]
     on_startup = startup
     on_shutdown = shutdown
@@ -149,6 +152,7 @@ class WorkerSettings:
         arq.cron(task_camera_watchdog, second={0, 30}),
         arq.cron(task_ensure_audit_partitions, day=1, hour=0, minute=1),
         arq.cron(task_cleanup_old_clips, hour=3, minute=30),
+        arq.cron(task_prune_recording_windows, hour=3, minute=45),
     ]
     max_jobs = 50
     job_timeout = 300

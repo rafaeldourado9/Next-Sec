@@ -23,6 +23,7 @@ from vms.notifications.models import NotificationRuleModel, NotificationLogModel
 from vms.lgpd.models import RetentionPolicyModel, ConsentRecordModel  # noqa: F401
 from vms.audit.models import AuditLogModel  # noqa: F401
 from vms.billing.models import LicenseKeyModel  # noqa: F401
+from vms.recordings.models import RecordingWindowModel  # noqa: F401
 from vms.core.database import Base
 
 # Objeto de configuração do Alembic com acesso ao alembic.ini

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
 import { Camera } from 'lucide-react'
+import { useAuthImage } from '@/hooks/useAuthImage'
 
 export function AuthImage({ src, alt, className, style, onClick }: {
   src: string
@@ -8,44 +8,7 @@ export function AuthImage({ src, alt, className, style, onClick }: {
   style?: React.CSSProperties
   onClick?: (e: React.MouseEvent) => void
 }) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  const [error, setError] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    let url: string | null = null
-    setError(false)
-    setBlobUrl(null)
-
-    async function load() {
-      try {
-        let token: string | null = null
-        try {
-          const raw = localStorage.getItem('vms-auth')
-          if (raw) {
-            const parsed = JSON.parse(raw)
-            token = parsed?.state?.tokens?.access_token ?? null
-          }
-        } catch { /* ignore */ }
-
-        const r = await fetch(src, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        })
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const blob = await r.blob()
-        url = URL.createObjectURL(blob)
-        if (!cancelled) setBlobUrl(url)
-      } catch {
-        if (!cancelled) setError(true)
-      }
-    }
-
-    load()
-    return () => {
-      cancelled = true
-      if (url) URL.revokeObjectURL(url)
-    }
-  }, [src])
+  const { blobUrl, error } = useAuthImage(src)
 
   if (error || !blobUrl) {
     return (

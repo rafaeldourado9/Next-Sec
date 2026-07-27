@@ -122,10 +122,20 @@ pathDefaults:
   sourceOnDemand: no
   maxReaders: 100
 
-  # ── Gravação contínua — DESABILITADA (fora do escopo do Next Sec, ver
-  # .genesis/architecture/reuse-plan.md e ADR-013). O MediaMTX aqui só serve
-  # para o serviço analytics/ ler frames via RTSP — não persiste vídeo.
+  # ── Gravação contínua — opt-in por câmera (ver cameras/mediamtx.py) ────────
+  # `record` fica `no` aqui e só vira `true` via API (config/paths/edit) pra
+  # câmeras com recording_enabled=True. Já existe um incidente documentado
+  # (mediamtx.py) de quando isso era ligado globalmente: o recorder travando
+  # em frames fora de ordem (câmera WiFi/RTSP instável) derrubava o muxer HLS
+  # ao vivo junto. sourceProtocol tcp (forçado em add_path pra fontes RTSP
+  # reais) reduz bastante o gatilho, mas não elimina — por isso opt-in,
+  # segmento curto (limita o raio de explosão) e rollout em canário.
   record: no
+  recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 15m
+  recordDeleteAfter: 0s   # 0 = desabilitado por padrão; override por path = retention_days da câmera
 
   # ── Hooks de status de stream ──────────────────────────────────────────────
   # wget no lugar de curl — evita depender de `apk add curl` (achado durante
@@ -149,9 +159,14 @@ pathDefaults:
   runOnRead: ""
   runOnUnread: ""
 
-  # runOnRecordSegmentComplete removido — sem gravação, não há segmento;
-  # o endpoint /webhooks/mediamtx/segment_ready também foi removido do
-  # events/router.py (ver reuse-plan.md).
+  # on_record_segment_complete: segmento gravado — estende/abre janela de
+  # cobertura no índice recording_windows (só afeta câmeras com gravação
+  # ligada; para as demais o hook dispara mas o handler não acha segmento
+  # real e ignora).
+  runOnRecordSegmentComplete: >-
+    wget -qO- --header="Content-Type: application/json"
+    --post-data="{\"path\":\"$MTX_PATH\",\"segment_path\":\"$MTX_SEGMENT_PATH\"}"
+    http://api:8000/api/v1/webhooks/mediamtx/on_record_segment_complete
 
 # ─── Paths estáticos ──────────────────────────────────────────────────────────
 # Câmeras adicionadas dinamicamente pelo cameras/mediamtx.py via API v3.

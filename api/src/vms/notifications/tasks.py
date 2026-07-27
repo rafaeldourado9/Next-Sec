@@ -84,13 +84,18 @@ async def task_dispatch_notification(
             raise
 
 
-def _draw_bbox_overlay(image_bytes: bytes, bbox: list) -> bytes:
+def _draw_bbox_overlay(image_bytes: bytes, bbox: list, bbox_unit: str | None = None) -> bytes:
     """Desenha o retângulo vermelho ao redor do bbox só na cópia enviada por
     WhatsApp — o arquivo em disco fica limpo (ver
     `analytics/core/orchestrator.py::_save_snapshot`), pois a box gravada nos
     pixels atrapalhava o "Analisar Evento" (GFPGAN não achava rosto com a
     linha cruzando o sujeito). O frontend desenha a box como overlay CSS; o
     WhatsApp não tem como fazer isso, então precisa vir já gravada na imagem.
+
+    `bbox_unit`: "pixel" (ex.: BoundingBox do ITSCAM Intelbras, relativo à
+    resolução do próprio JPEG) ou None/ausente (normalizado 0.0-1.0, usado
+    pelo analytics/ — intrusion, face_recognition). Formatos diferentes,
+    mesma função, pra não duplicar o desenho do retângulo em dois lugares.
     """
     import cv2
     import numpy as np
@@ -101,8 +106,12 @@ def _draw_bbox_overlay(image_bytes: bytes, bbox: list) -> bytes:
         return image_bytes
     h, w = frame.shape[:2]
     x1, y1, x2, y2 = bbox
-    pt1 = (max(0, int(x1 * w)), max(0, int(y1 * h)))
-    pt2 = (min(w - 1, int(x2 * w)), min(h - 1, int(y2 * h)))
+    if bbox_unit == "pixel":
+        pt1 = (max(0, int(x1)), max(0, int(y1)))
+        pt2 = (min(w - 1, int(x2)), min(h - 1, int(y2)))
+    else:
+        pt1 = (max(0, int(x1 * w)), max(0, int(y1 * h)))
+        pt2 = (min(w - 1, int(x2 * w)), min(h - 1, int(y2 * h)))
     thickness = max(2, round(min(w, h) / 300))
     cv2.rectangle(frame, pt1, pt2, (0, 0, 255), thickness)
     ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -114,6 +123,7 @@ def _draw_bbox_overlay(image_bytes: bytes, bbox: list) -> bytes:
 _EVENT_TITLES = {
     "analytics.intrusion.crossed": "🚨 Cerca Virtual",
     "analytics.face.recognized": "👤 Reconhecimento Facial",
+    "alpr_detected": "🚗 Placa Detectada",
 }
 _CLASS_LABELS = {
     "person": "Pessoa",
@@ -142,6 +152,9 @@ def _build_friendly_message(
     lines = [_EVENT_TITLES.get(event_type, "🔔 Alerta Next Sec")]
     if camera_name:
         lines.append(f"Câmera: {camera_name}")
+    plate = payload.get("plate")
+    if plate:
+        lines.append(f"Placa: {plate}")
     roi_name = payload.get("roi_name")
     if roi_name:
         lines.append(f"Zona: {roi_name}")
@@ -203,8 +216,9 @@ async def task_dispatch_event_notifications(
                 with open(full_path, "rb") as f:
                     image_bytes = f.read()
                 bbox = (payload or {}).get("bbox")
+                bbox_unit = (payload or {}).get("bbox_unit")
                 if image_bytes and isinstance(bbox, list) and len(bbox) == 4:
-                    image_bytes = _draw_bbox_overlay(image_bytes, bbox)
+                    image_bytes = _draw_bbox_overlay(image_bytes, bbox, bbox_unit)
 
             camera_name = None
             if camera_id:

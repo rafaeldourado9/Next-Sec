@@ -17,6 +17,7 @@ interface CreateCameraData {
   ptz_supported?: boolean
   manufacturer?: string
   retention_days?: number
+  recording_enabled?: boolean
   stream_quality?: StreamQuality
   stream_protocol: string
   rtsp_url?: string
@@ -38,7 +39,25 @@ interface UpdateCameraData {
   onvif_password?: string
   manufacturer?: string
   retention_days?: number
+  recording_enabled?: boolean
   is_active?: boolean
+}
+
+export interface RecordingRange {
+  start: string
+  end: string
+}
+
+export interface RecordingAvailability {
+  camera_id: string
+  ranges: RecordingRange[]
+}
+
+export interface RecordingPlaybackUrl {
+  playback_url: string
+  token: string
+  camera_id: string
+  expires_in: number
 }
 
 export const camerasService = {
@@ -88,6 +107,20 @@ export const camerasService = {
 
   async discover(data: { subnet?: string }): Promise<DiscoverOnvifResponse> {
     const res = await api.post<DiscoverOnvifResponse>('/cameras/discover', data)
+    return res.data
+  },
+
+  async recordingsAvailability(id: string, start: string, end: string): Promise<RecordingAvailability> {
+    const res = await api.get<RecordingAvailability>(`/cameras/${id}/recordings/availability`, {
+      params: { start, end },
+    })
+    return res.data
+  },
+
+  async recordingsPlaybackUrl(id: string, start: string, end: string): Promise<RecordingPlaybackUrl> {
+    const res = await api.get<RecordingPlaybackUrl>(`/cameras/${id}/recordings/playback-url`, {
+      params: { start, end },
+    })
     return res.data
   },
 }

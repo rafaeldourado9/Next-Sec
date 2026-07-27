@@ -49,6 +49,7 @@ class CameraService:
         longitude: float | None = None,
         ia_enabled: bool = False,
         retention_days: int = 7,
+        recording_enabled: bool = False,
         stream_quality: StreamQuality = StreamQuality.HIGH,
         stream_protocol: StreamProtocol = StreamProtocol.RTSP_PULL,
         rtsp_url: str | None = None,
@@ -133,6 +134,7 @@ class CameraService:
             longitude=longitude,
             ia_enabled=ia_enabled,
             retention_days=retention_days,
+            recording_enabled=recording_enabled,
             stream_quality=stream_quality,
             agent_id=agent_id,
             ptz_supported=ptz_supported,
@@ -147,7 +149,12 @@ class CameraService:
             if saved.stream_protocol in (StreamProtocol.RTSP_PULL, StreamProtocol.ONVIF)
             else ""
         )
-        await self._mediamtx.add_path(saved.mediamtx_path, source_url=source_url)
+        await self._mediamtx.add_path(
+            saved.mediamtx_path,
+            source_url=source_url,
+            recording_enabled=saved.recording_enabled,
+            retention_days=saved.retention_days,
+        )
         if saved.agent_id:
             await _notify_agent(saved.agent_id, "camera_added", {"camera_id": saved.id})
         return saved
@@ -179,6 +186,7 @@ class CameraService:
         longitude: float | None = None,
         ia_enabled: bool | None = None,
         retention_days: int | None = None,
+        recording_enabled: bool | None = None,
         stream_quality: StreamQuality | None = None,
         agent_id: str | None = None,
         is_active: bool | None = None,
@@ -190,6 +198,15 @@ class CameraService:
     ) -> Camera:
         """Atualiza campos fornecidos da câmera."""
         camera = await self.get_camera(camera_id, tenant_id)
+        # Reprovisiona o path no MediaMTX (edit/add mesmo se já ativo) só
+        # quando um campo que afeta a config de gravação de fato muda — ver
+        # MediaMTXClient.add_path(force=...). Reprovisionar sempre a cada
+        # update seria inofensivo mas desnecessário; o importante é NUNCA
+        # deixar de reprovisionar quando o usuário liga/desliga a gravação.
+        recording_config_changed = (
+            (retention_days is not None and retention_days != camera.retention_days)
+            or (recording_enabled is not None and recording_enabled != camera.recording_enabled)
+        )
 
         # Validações de unicidade se nome ou rtsp_url estão sendo alterados
         if name is not None and name != camera.name:
@@ -238,6 +255,8 @@ class CameraService:
             camera.ia_enabled = ia_enabled
         if retention_days is not None:
             camera.retention_days = retention_days
+        if recording_enabled is not None:
+            camera.recording_enabled = recording_enabled
         if stream_quality is not None:
             camera.stream_quality = stream_quality
         if agent_id is not None:
@@ -257,14 +276,21 @@ class CameraService:
 
         updated = await self._cameras.update(camera)
 
-        # Re-provision MediaMTX path se RTSP URL mudou
-        if rtsp_url is not None:
+        # Re-provision MediaMTX path se RTSP URL mudou, ou se algo que afeta
+        # a config de gravação mudou (force=True — ver docstring de add_path).
+        if rtsp_url is not None or recording_config_changed:
             source_url = (
                 updated.rtsp_url
                 if updated.stream_protocol in (StreamProtocol.RTSP_PULL, StreamProtocol.ONVIF)
                 else ""
             )
-            await self._mediamtx.add_path(updated.mediamtx_path, source_url=source_url)
+            await self._mediamtx.add_path(
+                updated.mediamtx_path,
+                source_url=source_url,
+                recording_enabled=updated.recording_enabled,
+                retention_days=updated.retention_days,
+                force=recording_config_changed,
+            )
 
         if updated.agent_id:
             await _notify_agent(updated.agent_id, "config_updated", {"camera_id": updated.id})

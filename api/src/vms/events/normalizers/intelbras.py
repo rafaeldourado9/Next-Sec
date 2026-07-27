@@ -134,6 +134,19 @@ class IntelbrasNormalizer:
 
             confidence = _norm_confidence(plate_info.get("Confidence", 0))
 
+            # BoundingBox vem em pixels [x1, y1, x2, y2], relativo à resolução
+            # do JPEG em NormalPic.Content — ao contrário do bbox normalizado
+            # (0.0-1.0) usado pelo analytics/, aqui fica em pixels mesmo, pois
+            # o frontend já tem a imagem carregada (naturalWidth/naturalHeight)
+            # e não precisamos decodificar o JPEG só para normalizar.
+            raw_bbox = plate_info.get("BoundingBox")
+            bbox: list[float] | None = None
+            if isinstance(raw_bbox, list) and len(raw_bbox) == 4:
+                try:
+                    bbox = [float(v) for v in raw_bbox]
+                except (TypeError, ValueError):
+                    bbox = None
+
             # Timestamp do SnapInfo (mais preciso que o JPEG)
             snap_time = snap_info.get("AccurateTime") or snap_info.get("SnapTime") or ""
             if snap_time:
@@ -168,6 +181,7 @@ class IntelbrasNormalizer:
                     **vehicle_meta,
                 },
                 image_b64=image_b64,
+                bbox=bbox,
             )
 
         # Formato 3: DVR/NVR com Events[]

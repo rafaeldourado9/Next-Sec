@@ -85,7 +85,19 @@ async def _provision_mediamtx_paths() -> None:
                 else:
                     mediamtx_path = f"tenant-{cam.tenant_id}/cam-{cam.id}"
 
-                ok = await mt_client.add_path(mediamtx_path, source_url=source_url)
+                # force=True: esse loop roda só uma vez no boot da API — seu
+                # propósito é reconciliar o MediaMTX com o estado real do
+                # banco (inclusive depois de um restart do MediaMTX, quando
+                # a fonte RTSP real reconecta rápido e o path já aparece
+                # "ready" antes deste loop rodar, o que faria o early-return
+                # de add_path pular a config de gravação silenciosamente).
+                ok = await mt_client.add_path(
+                    mediamtx_path,
+                    source_url=source_url,
+                    recording_enabled=getattr(cam, "recording_enabled", False),
+                    retention_days=cam.retention_days,
+                    force=True,
+                )
                 if ok:
                     provisioned += 1
                     logger.debug("Path provisionado: %s", mediamtx_path)
@@ -254,6 +266,7 @@ def _include_routers(app: FastAPI) -> None:
     from vms.cameras.router import router as cameras_router
     from vms.cameras.isapi_router import router as isapi_router
     from vms.events.router import router as events_router
+    from vms.recordings.router import router as recordings_router
     from vms.notifications.router import router as notifications_router
     from vms.sse.router import router as sse_router
     from vms.plugins.router import router as plugins_router
@@ -277,6 +290,7 @@ def _include_routers(app: FastAPI) -> None:
     app.include_router(cameras_router, prefix="/api/v1")
     app.include_router(isapi_router, prefix="/api/v1")
     app.include_router(events_router, prefix="/api/v1")
+    app.include_router(recordings_router, prefix="/api/v1")
 
     # Webhooks públicos (câmeras POSTam diretamente, sem auth)
     # Prefixo /webhooks → nginx location /webhooks/ já roteia para a API

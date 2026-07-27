@@ -30,6 +30,7 @@ class EventRepositoryPort(Protocol):
         source: str | None = None,
         occurred_after: datetime | None = None,
         occurred_before: datetime | None = None,
+        confidence_min: float | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[list[VmsEvent], int]: ...
@@ -89,6 +90,7 @@ class EventRepository:
         source: str | None = None,
         occurred_after: datetime | None = None,
         occurred_before: datetime | None = None,
+        confidence_min: float | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[list[VmsEvent], int]:
@@ -97,7 +99,8 @@ class EventRepository:
         if event_type:
             base = base.where(VmsEventModel.event_type == event_type)
         if plate:
-            base = base.where(VmsEventModel.plate == plate.upper())
+            # Busca parcial (contains) — campo de busca, não filtro exato.
+            base = base.where(VmsEventModel.plate.ilike(f"%{plate.upper()}%"))
         if camera_id:
             base = base.where(VmsEventModel.camera_id == camera_id)
         if source == "lpr":
@@ -108,6 +111,8 @@ class EventRepository:
             base = base.where(VmsEventModel.occurred_at >= occurred_after)
         if occurred_before:
             base = base.where(VmsEventModel.occurred_at <= occurred_before)
+        if confidence_min is not None:
+            base = base.where(VmsEventModel.confidence >= confidence_min)
 
         count_stmt = select(func.count()).select_from(base.subquery())
         total = await self._session.scalar(count_stmt) or 0

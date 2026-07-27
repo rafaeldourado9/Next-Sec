@@ -2,15 +2,23 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ScanLine, Search, Filter, RefreshCw, X, Film,
-  ChevronLeft, ChevronRight, ZoomIn, ImageOff,
+  ChevronLeft, ChevronRight, ZoomIn, ImageOff, FileDown, FileText,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { eventsService } from '@/services/events'
 import { camerasService } from '@/services/cameras'
 import { useSSE } from '@/hooks/useSSE'
+import { useAuthImage } from '@/hooks/useAuthImage'
 import { getEventTypeLabel, getEventTypeColor } from '@/constants/eventTypes'
 import { AuthImage } from '@/components/ui/AuthImage'
+import { PlateZoomPanel } from '@/components/camera/PlateZoomPanel'
 import type { VmsEvent, Camera } from '@/types'
+
+function readBbox(payload: Record<string, unknown> | undefined): [number, number, number, number] | null {
+  const bbox = payload?.bbox
+  if (!Array.isArray(bbox) || bbox.length !== 4 || bbox.some(v => typeof v !== 'number')) return null
+  return bbox as [number, number, number, number]
+}
 
 const PAGE_SIZE = 25
 
@@ -40,7 +48,9 @@ export function DetectionsPage() {
   const [events, setEvents]     = useState<VmsEvent[]>([])
   const [cameras, setCameras]   = useState<Camera[]>([])
   const [loading, setLoading]   = useState(true)
-  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [lightboxEvent, setLightboxEvent] = useState<VmsEvent | null>(null)
+  const [imageZoomed, setImageZoomed]     = useState(false)
+  const [zoomOrigin, setZoomOrigin]       = useState('50% 50%')
 
   // Filters
   const [plate, setPlate]         = useState('')
@@ -54,37 +64,82 @@ export function DetectionsPage() {
   const [page, setPage]   = useState(1)
   const [total, setTotal] = useState(0)
   const [pages, setPages] = useState(1)
+  const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
+  const [hasNewEvents, setHasNewEvents] = useState(false)
 
   useEffect(() => {
     camerasService.list().then(setCameras).catch(() => {})
   }, [])
 
+  // Filtros ativos, no formato que a API espera — reaproveitado por load()
+  // e pelas exportações, pra exportar sempre bater exatamente com o que
+  // está sendo visto na tela (não só a página atual).
+  const activeFilters = {
+    source: 'lpr' as const,
+    ...(plate.trim() && { plate: plate.trim() }),
+    ...(cameraId       && { camera_id: cameraId }),
+    ...(dateFrom       && { occurred_after:  `${dateFrom}T00:00:00` }),
+    ...(dateTo         && { occurred_before: `${dateTo}T23:59:59` }),
+    ...(confMin        && { confidence_min: Number(confMin) / 100 }),
+  }
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await eventsService.list({
-        source: 'lpr',
-        page,
-        page_size: PAGE_SIZE,
-        ...(plate.trim() && { plate: plate.trim() }),
-        ...(cameraId       && { camera_id: cameraId }),
-        ...(dateFrom       && { occurred_after:  `${dateFrom}T00:00:00` }),
-        ...(dateTo         && { occurred_before: `${dateTo}T23:59:59` }),
-      })
+      const res = await eventsService.list({ ...activeFilters, page, page_size: PAGE_SIZE })
       setEvents(res.items)
       setTotal(res.total)
       setPages(res.pages)
+      setHasNewEvents(false)
     } catch {
       setEvents([])
     } finally {
       setLoading(false)
     }
-  }, [plate, cameraId, dateFrom, dateTo, page])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plate, cameraId, dateFrom, dateTo, confMin, page])
+
+  const handleExport = useCallback(async (format: 'csv' | 'pdf') => {
+    setExporting(format)
+    try {
+      const blob = format === 'csv'
+        ? await eventsService.exportCsv(activeFilters)
+        : await eventsService.exportPdf(activeFilters)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      a.href = url
+      a.download = `deteccoes_alpr_${stamp}.${format}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      // silencioso — botão volta ao estado normal, usuário pode tentar de novo
+    } finally {
+      setExporting(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plate, cameraId, dateFrom, dateTo, confMin])
 
   useEffect(() => { setPage(1) }, [plate, cameraId, dateFrom, dateTo, confMin])
   useEffect(() => { load() }, [load])
 
-  // Real-time: recarrega quando qualquer evento novo chega por SSE.
+  // Auto-refresh de 5min — placas chegam a cada 15-40s, recarregar a cada
+  // evento (via SSE) deixava a tabela mudando rápido demais pro usuário
+  // conseguir olhar uma detecção antes dela se mexer (achado: usuário
+  // reportou "fico sem conseguir ver os eventos"). Só na página 1: recarregar
+  // uma página 3, por exemplo, sozinha no fundo seria confuso navegando.
+  useEffect(() => {
+    if (page !== 1) return
+    const id = setInterval(load, 5 * 60_000)
+    return () => clearInterval(id)
+  }, [page, load])
+
+  // SSE não recarrega mais a lista automaticamente (era o principal
+  // causador do "atualiza rápido demais") — só acende um indicador sutil de
+  // que há evento novo; o usuário decide quando atualizar (botão) ou espera
+  // o ciclo de 5min.
   const { lastEvent } = useSSE()
   const lastSeenRef = useRef<unknown>(null)
   useEffect(() => {
@@ -92,12 +147,8 @@ export function DetectionsPage() {
     lastSeenRef.current = lastEvent
     const inner = (lastEvent as { data?: { event_type?: string } }).data
     if (!inner?.event_type) return
-    load()
-  }, [lastEvent, load])
-
-  const displayed = confMin
-    ? events.filter(e => e.confidence != null && e.confidence >= Number(confMin) / 100)
-    : events
+    setHasNewEvents(true)
+  }, [lastEvent])
 
   const cameraName = (id: string | null) =>
     id ? (cameras.find(c => c.id === id)?.name ?? id) : '—'
@@ -112,25 +163,14 @@ export function DetectionsPage() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Lightbox */}
-      {lightboxSrc && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/92 backdrop-blur-sm cursor-zoom-out"
-          onClick={() => setLightboxSrc(null)}
-        >
-          <button
-            className="absolute top-5 right-5 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition"
-            onClick={e => { e.stopPropagation(); setLightboxSrc(null) }}
-          >
-            <X size={18} />
-          </button>
-          <div onClick={e => e.stopPropagation()} className="cursor-default">
-            <AuthImage
-              src={lightboxSrc}
-              alt="Snapshot"
-              className="max-w-5xl max-h-[88vh] rounded-xl object-contain shadow-2xl"
-            />
-          </div>
-        </div>
+      {lightboxEvent && (
+        <PlateLightbox
+          event={lightboxEvent}
+          imageZoomed={imageZoomed}
+          zoomOrigin={zoomOrigin}
+          onZoomToggle={origin => { setZoomOrigin(origin); setImageZoomed(z => !z) }}
+          onClose={() => { setLightboxEvent(null); setImageZoomed(false) }}
+        />
       )}
 
       <div className="p-6 space-y-4 overflow-y-auto flex-1">
@@ -167,8 +207,39 @@ export function DetectionsPage() {
               Filtros avançados
               {hasFilters && <span className="w-1.5 h-1.5 rounded-full bg-accent" />}
             </button>
-            <button onClick={load} className="btn btn-ghost w-8 h-8 p-0" title="Atualizar">
+            <button
+              onClick={load}
+              className="btn btn-ghost w-8 h-8 p-0 relative"
+              title={hasNewEvents ? 'Novas detecções disponíveis — clique pra atualizar' : 'Atualizar'}
+            >
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              {hasNewEvents && !loading && (
+                <span
+                  className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-accent"
+                  style={{ boxShadow: '0 0 0 2px var(--surface)' }}
+                />
+              )}
+            </button>
+            <div className="w-px h-5 mx-1" style={{ background: 'var(--border)' }} />
+            <button
+              onClick={() => handleExport('csv')}
+              disabled={exporting !== null}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border text-t2 hover:text-t1 transition disabled:opacity-50"
+              style={{ borderColor: 'var(--border)' }}
+              title="Exportar CSV dos resultados filtrados"
+            >
+              <FileDown size={13} className={exporting === 'csv' ? 'animate-pulse' : ''} />
+              CSV
+            </button>
+            <button
+              onClick={() => handleExport('pdf')}
+              disabled={exporting !== null}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border text-t2 hover:text-t1 transition disabled:opacity-50"
+              style={{ borderColor: 'var(--border)' }}
+              title="Exportar PDF dos resultados filtrados"
+            >
+              <FileText size={13} className={exporting === 'pdf' ? 'animate-pulse' : ''} />
+              PDF
             </button>
           </div>
         </div>
@@ -296,7 +367,7 @@ export function DetectionsPage() {
                     ))}
                   </tr>
                 ))
-              ) : displayed.length === 0 ? (
+              ) : events.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="px-4 py-16 text-center">
                     <div className="flex flex-col items-center gap-3 text-t3">
@@ -313,7 +384,7 @@ export function DetectionsPage() {
                     </div>
                   </td>
                 </tr>
-              ) : displayed.map(ev => {
+              ) : events.map(ev => {
                 const typeColor = getEventTypeColor(ev.event_type)
                 return (
                   <tr
@@ -330,7 +401,7 @@ export function DetectionsPage() {
                           background: 'var(--elevated)',
                           cursor: ev.image_url ? 'zoom-in' : 'default',
                         }}
-                        onClick={() => ev.image_url && setLightboxSrc(ev.image_url)}
+                        onClick={() => ev.image_url && setLightboxEvent(ev)}
                       >
                         {ev.image_url ? (
                           <>
@@ -462,6 +533,90 @@ export function DetectionsPage() {
               </button>
             </div>
           </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PlateLightbox({
+  event, imageZoomed, zoomOrigin, onZoomToggle, onClose,
+}: {
+  event: VmsEvent
+  imageZoomed: boolean
+  zoomOrigin: string
+  onZoomToggle: (origin: string) => void
+  onClose: () => void
+}) {
+  const { blobUrl, error } = useAuthImage(event.image_url)
+  const bbox = readBbox(event.payload)
+
+  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    e.stopPropagation()
+    if (imageZoomed) {
+      onZoomToggle('50% 50%')
+      return
+    }
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = ((e.clientX - rect.left) / rect.width) * 100
+    const y = ((e.clientY - rect.top) / rect.height) * 100
+    onZoomToggle(`${x}% ${y}%`)
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/92 backdrop-blur-sm cursor-zoom-out"
+      onClick={onClose}
+    >
+      <button
+        className="absolute top-5 right-5 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition"
+        onClick={e => { e.stopPropagation(); onClose() }}
+      >
+        <X size={18} />
+      </button>
+
+      <div onClick={e => e.stopPropagation()} className="relative cursor-default">
+        {blobUrl && !error ? (
+          <div className="overflow-hidden rounded-xl" style={{ maxWidth: '80vw', maxHeight: '88vh' }}>
+            <img
+              src={blobUrl}
+              alt="Snapshot"
+              onClick={handleImageClick}
+              className="block shadow-2xl transition-transform duration-200"
+              style={{
+                maxWidth: '80vw',
+                maxHeight: '88vh',
+                objectFit: 'contain',
+                transform: imageZoomed ? 'scale(2.5)' : 'scale(1)',
+                transformOrigin: zoomOrigin,
+                cursor: imageZoomed ? 'zoom-out' : 'zoom-in',
+              }}
+            />
+          </div>
+        ) : (
+          <div className="w-96 h-64 flex items-center justify-center text-t3 text-sm">
+            Carregando...
+          </div>
+        )}
+
+        {!imageZoomed && bbox && blobUrl && (
+          <div className="absolute bottom-4 right-4 flex flex-col items-end gap-1.5">
+            <span className="text-[10px] text-white/70 bg-black/60 px-2 py-0.5 rounded-full">
+              Zoom da placa
+            </span>
+            <PlateZoomPanel blobUrl={blobUrl} bbox={bbox} />
+            {event.plate && (
+              <span className="font-mono font-bold text-lg text-white bg-black/70 px-3 py-1 rounded-md tracking-widest">
+                {event.plate}
+              </span>
+            )}
+          </div>
+        )}
+
+        {!imageZoomed && (
+          <span className="absolute top-3 left-3 text-[10px] text-white/60 bg-black/50 px-2 py-1 rounded-full">
+            Clique na imagem pra dar zoom
+          </span>
         )}
       </div>
     </div>

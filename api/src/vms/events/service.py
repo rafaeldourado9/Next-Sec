@@ -99,6 +99,7 @@ class EventService:
                 "manufacturer": detection.manufacturer,
                 "image_b64": detection.image_b64,
                 "bbox": detection.bbox,
+                "bbox_unit": "pixel" if detection.bbox else None,
                 "raw": detection.raw_payload,
             },
             camera_id=detection.camera_id,
@@ -130,6 +131,7 @@ class EventService:
         source: str | None = None,
         occurred_after: datetime | None = None,
         occurred_before: datetime | None = None,
+        confidence_min: float | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[list[VmsEvent], int]:
@@ -142,6 +144,7 @@ class EventService:
             source=source,
             occurred_after=occurred_after,
             occurred_before=occurred_before,
+            confidence_min=confidence_min,
             limit=limit,
             offset=offset,
         )

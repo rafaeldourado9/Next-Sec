@@ -234,6 +234,7 @@ class Camera(AggregateRoot):
     ia_enabled: bool = False
     agent_id: EntityId | None = None
     retention_days: int = 7
+    recording_enabled: bool = False
     stream_quality: str = StreamQuality.HIGH
     is_active: bool = True
     is_online: bool = False

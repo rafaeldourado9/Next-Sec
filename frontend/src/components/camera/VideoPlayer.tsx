@@ -11,6 +11,9 @@ interface VideoPlayerProps {
   className?: string
   offline?: boolean
   onError?: () => void
+  // 'vod': desliga liveDurationInfinity — src é um manifest de playback
+  // (/mediamtx-playback/) com duração finita, não um stream ao vivo.
+  mode?: 'live' | 'vod'
   // Otimizações de banda para mosaico
   bandwidthConfig?: {
     maxBufferLength: number
@@ -22,6 +25,7 @@ interface VideoPlayerProps {
 
 export function VideoPlayer({
   src, name, autoPlay = true, muted: initialMuted = true, className, offline = false, onError, bandwidthConfig,
+  mode = 'live',
 }: VideoPlayerProps) {
   const videoRef      = useRef<HTMLVideoElement>(null)
   const hlsRef        = useRef<Hls | null>(null)
@@ -122,7 +126,7 @@ export function VideoPlayer({
         capLevelToPlayerSize: bandwidthConfig?.capLevelToPlayerSize ?? true,
         // Otimizações para múltiplos streams
         maxBufferSize: bandwidthConfig ? 1024 * 1024 : 60 * 1024 * 1024, // 1MB vs 60MB
-        liveDurationInfinity: true,
+        liveDurationInfinity: mode === 'live',
         testBandwidth: !bandwidthConfig, // Testa banda apenas para 1x1
       })
       hlsRef.current = hls
@@ -199,7 +203,7 @@ export function VideoPlayer({
         video.load()
       }
     }
-  }, [src, autoPlay, onError, offline, safePlay])
+  }, [src, autoPlay, onError, offline, safePlay, mode])
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current

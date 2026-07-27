@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        /* Formatação ABNT (NBR 14724) — margens 3/2cm, fonte Arial, só preto
+           e branco (sem cor nenhuma, inclusive nas bordas/tabelas). */
+        @page {
+            size: A4;
+            margin: 3cm 2cm 2cm 3cm;
+            @top-right {
+                content: "Página " counter(page) " de " counter(pages);
+                font-family: Arial, Helvetica, sans-serif;
+                font-size: 10pt;
+                color: #000;
+            }
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 12pt;
+            line-height: 1.5;
+            color: #000;
+            background: #fff;
+        }
+        h1 {
+            font-size: 14pt;
+            font-weight: bold;
+            text-align: center;
+            text-transform: uppercase;
+            margin-bottom: 4pt;
+        }
+        .subtitle {
+            font-size: 11pt;
+            text-align: center;
+            margin-bottom: 20pt;
+        }
+        .meta-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 10pt;
+            margin-bottom: 18pt;
+        }
+        .meta-table td {
+            padding: 2pt 4pt;
+            vertical-align: top;
+        }
+        .meta-table td.label {
+            font-weight: bold;
+            width: 140pt;
+        }
+        table.data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9pt;
+            margin-top: 8pt;
+        }
+        table.data-table th,
+        table.data-table td {
+            border: 1px solid #000;
+            padding: 4pt 5pt;
+            text-align: left;
+        }
+        table.data-table th {
+            font-weight: bold;
+            background: #fff;
+        }
+        .footer-note {
+            margin-top: 24pt;
+            font-size: 9pt;
+            text-align: justify;
+        }
+    </style>
+</head>
+<body>
+    <h1>Relatório de Detecções de Placa (ALPR)</h1>
+    <p class="subtitle">{{ tenant_name }}</p>
+
+    <table class="meta-table">
+        <tr>
+            <td class="label">Gerado em:</td>
+            <td>{{ generated_at }}</td>
+        </tr>
+        <tr>
+            <td class="label">Período:</td>
+            <td>{{ period_label }}</td>
+        </tr>
+        <tr>
+            <td class="label">Câmera:</td>
+            <td>{{ camera_label }}</td>
+        </tr>
+        <tr>
+            <td class="label">Placa (filtro):</td>
+            <td>{{ plate_filter or '—' }}</td>
+        </tr>
+        <tr>
+            <td class="label">Confiança mínima:</td>
+            <td>{{ confidence_label }}</td>
+        </tr>
+        <tr>
+            <td class="label">Total de registros:</td>
+            <td><strong>{{ items|length }}</strong></td>
+        </tr>
+    </table>
+
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Placa</th>
+                <th>Câmera</th>
+                <th>Data/Hora</th>
+                <th>Confiança</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ item.plate or '—' }}</td>
+                <td>{{ item.camera_name or '—' }}</td>
+                <td>{{ item.occurred_at }}</td>
+                <td>{{ item.confidence }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <p class="footer-note">
+        Documento gerado automaticamente pelo sistema Next Sec a partir dos registros de
+        reconhecimento automático de placas (ALPR). As leituras têm caráter informativo e
+        estão sujeitas à precisão do sistema de reconhecimento óptico da câmera de origem.
+    </p>
+</body>
+</html>

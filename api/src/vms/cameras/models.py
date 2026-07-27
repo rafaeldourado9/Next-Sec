@@ -79,6 +79,7 @@ class CameraModel(Base):
     manufacturer: Mapped[str] = mapped_column(String(50), nullable=False, default="generic")
     camera_type: Mapped[str] = mapped_column(String(50), nullable=False, default="internal")
     retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    recording_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     stream_quality: Mapped[str] = mapped_column(String(20), nullable=False, default="high")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_online: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

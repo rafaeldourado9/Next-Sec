@@ -48,6 +48,7 @@ export interface Camera {
   onvif_username: string | null
   manufacturer: string
   retention_days: number
+  recording_enabled: boolean
   stream_quality: StreamQuality
   is_active: boolean
   is_online: boolean

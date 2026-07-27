@@ -39,25 +39,43 @@ class MediaMTXClient:
             logger.warning("Health check MediaMTX falhou (%s): %s - %s", type(exc).__name__, self._base_url, exc)
             return False
 
-    async def add_path(self, path: str, source_url: str = "") -> bool:
+    async def add_path(
+        self,
+        path: str,
+        source_url: str = "",
+        recording_enabled: bool = False,
+        retention_days: int | None = None,
+        force: bool = False,
+    ) -> bool:
         """
         Upsert de path de stream no MediaMTX. Retorna True se OK.
 
         - source_url vazio: aceita qualquer publisher (RTMP push)
         - source_url preenchido: pull RTSP (modo agent)
+        - recording_enabled: liga gravação contínua nesse path específico
+          (ver incidente documentado abaixo — default é False)
+        - force: ignora o early-return e reafirma a config mesmo se o path já
+          está ativo em runtime. Só o chamador (CameraService.update_camera)
+          sabe quando um campo relevante (recording_enabled/retention_days)
+          de fato mudou — sem isso, main.py/watchdog reprovisionando TODAS as
+          câmeras no boot faria edit+add em cada uma toda vez, sem necessidade
+          e com risco de mexer num path RTSP já ao vivo à toa.
 
         Estratégia:
-        1. Verifica runtime: se path já está ativo, retorna True sem ruído.
+        1. Verifica runtime: se path já está ativo e não é force, retorna
+           True sem ruído (early-return original — preserva o path ao vivo).
         2. Tenta edit (config existente): atualiza se já provisionado antes.
         3. Tenta add (config nova): cria fresh.
         """
-        # NOTA (Next Sec): `record: True` aqui contradizia a decisão do projeto
-        # de não gravar continuamente (mediamtx.yml pathDefaults tem record: no)
-        # — cada câmera criada reativava a gravação por path, e o recorder
-        # travando em frames fora de ordem (câmera real via WiFi/RTSP instável)
-        # derrubava o muxer HLS junto, parecendo "a câmera crasha toda hora"
-        # (achado durante teste local). Sem gravação, sem recorder, sem esse
-        # ponto de falha.
+        # NOTA (Next Sec): incidente anterior — `record: True` global (via
+        # mediamtx.yml pathDefaults) derrubava o muxer HLS ao vivo junto,
+        # porque o recorder travava em frames fora de ordem (câmera real via
+        # WiFi/RTSP instável). A correção na época foi reverter a gravação
+        # inteira. Reintroduzida agora como opt-in por câmera
+        # (recording_enabled, default False) + sourceProtocol tcp forçado
+        # (abaixo) + recordSegmentDuration curto (mediamtx.yml) pra limitar o
+        # raio de explosão de um segmento corrompido. Rollout em canário
+        # obrigatório antes de ligar em mais de uma câmera — ver plano.
         body: dict = {}
         if source_url:
             body["source"] = source_url
@@ -65,42 +83,64 @@ class MediaMTXClient:
             # pacote com frequência em rede doméstica, o que quebrava o muxer
             # HLS (ver "too many reordered frames" nos logs do mediamtx).
             body["sourceProtocol"] = "tcp"
+        if recording_enabled:
+            body["record"] = True
+            body["recordDeleteAfter"] = f"{(retention_days or 7) * 86400}s"
+        else:
+            # Explícito — sem isso, desligar recording_enabled numa câmera já
+            # provisionada com gravação ligada não tinha efeito nenhum (o
+            # runtime-check abaixo faria early-return antes de chegar no edit).
+            body["record"] = False
 
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                # 1. Path já está ativo como stream runtime? Nada a fazer.
+                # 1. Path já está ativo como stream runtime? Nada a fazer,
+                # a menos que force=True (ver docstring).
                 runtime_resp = await client.get(
                     f"{self._base_url}/v3/paths/get/{path}"
                 )
-                if runtime_resp.status_code == 200:
+                if runtime_resp.status_code == 200 and not force:
                     logger.debug("Path MediaMTX já ativo (runtime): %s", path)
                     return True
 
-                # 2. Tenta atualizar config existente
-                edit_resp = await client.post(
-                    f"{self._base_url}/v3/config/paths/edit/{path}", json=body
+                # 2. Tenta criar config nova.
+                add_resp = await client.post(
+                    f"{self._base_url}/v3/config/paths/add/{path}", json=body
                 )
-                if edit_resp.status_code == 200:
-                    logger.debug("Path MediaMTX config atualizado: %s", path)
+                if add_resp.status_code == 200:
+                    logger.debug("Path MediaMTX criado: %s", path)
                     return True
 
-                # 3. Config não existe — cria
-                if edit_resp.status_code == 404:
-                    add_resp = await client.post(
+                # 3. Config já existe (400) — reconfigura via delete+add.
+                # NOTA (Next Sec): `config/paths/edit/{name}` retorna 404 de
+                # ROTA (não erro de app — "404 page not found" cru do Go
+                # router) pra nomes de path com "/" — que é exatamente o
+                # nosso esquema (tenant-{id}/cam-{id}). Confirmado via teste
+                # direto durante o canário de gravação: edit nunca funcionava,
+                # e o código antigo tratava o 400 subsequente do add como
+                # "já existe, sucesso" — mascarando que a config NUNCA era de
+                # fato atualizada (recording_enabled ficava sempre False no
+                # MediaMTX, mesmo com force=True). delete+add é o único
+                # caminho que realmente reconfigura um path existente nesta
+                # versão — custa uma breve reconexão do stream, aceitável
+                # numa mudança de config deliberada (não roda em loop).
+                if add_resp.status_code == 400:
+                    await client.delete(f"{self._base_url}/v3/config/paths/delete/{path}")
+                    retry_resp = await client.post(
                         f"{self._base_url}/v3/config/paths/add/{path}", json=body
                     )
-                    if add_resp.status_code in (200, 400):
-                        logger.debug("Path MediaMTX criado: %s", path)
+                    if retry_resp.status_code == 200:
+                        logger.debug("Path MediaMTX reconfigurado (delete+add): %s", path)
                         return True
                     logger.warning(
-                        "Erro ao criar path '%s': %s — %s",
-                        path, add_resp.status_code, add_resp.text,
+                        "Erro ao reconfigurar path '%s' via delete+add: %s — %s",
+                        path, retry_resp.status_code, retry_resp.text,
                     )
                     return False
 
                 logger.warning(
-                    "Erro ao atualizar path '%s': %s — %s",
-                    path, edit_resp.status_code, edit_resp.text,
+                    "Erro ao criar path '%s': %s — %s",
+                    path, add_resp.status_code, add_resp.text,
                 )
                 return False
         except Exception as exc:

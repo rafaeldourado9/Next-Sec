@@ -91,6 +91,34 @@ def create_viewer_token(tenant_id: str, camera_id: str) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm=_ALGORITHM)
 
 
+def create_playback_token(
+    tenant_id: str, camera_id: str, start: str, end: str
+) -> str:
+    """Emite token JWT pra acessar o VOD de um intervalo específico
+    (`/mediamtx-playback/`, validado via nginx auth_request).
+
+    `start`/`end` (RFC3339) ficam embutidos no token — um token vazado só
+    serve pro mesmo intervalo que foi pedido, não dá acesso a qualquer
+    trecho da câmera. 60min de validade: mais longo que o viewer_token de
+    live (sessão de revisão de gravação tende a durar mais que assistir ao
+    vivo, com pausas/scrub).
+    """
+    settings = get_settings()
+
+    payload = {
+        "sub": camera_id,
+        "tenant_id": tenant_id,
+        "camera_id": camera_id,
+        "start": start,
+        "end": end,
+        "type": "playback",
+        "exp": datetime.now(UTC) + timedelta(minutes=60),
+        "iat": datetime.now(UTC),
+        "jti": str(uuid.uuid4()),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=_ALGORITHM)
+
+
 def decode_token(token: str) -> dict:
     """Decodifica e valida JWT. Lança JWTError se inválido."""
     settings = get_settings()

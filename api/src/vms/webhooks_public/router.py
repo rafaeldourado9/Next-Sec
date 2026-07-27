@@ -424,6 +424,33 @@ async def _publish_sse(tenant_id: str, event_type: str, data: dict) -> None:
         logger.debug("Falha ao publicar SSE (não crítico): %s", exc)
 
 
+async def _dispatch_alpr_notification(request: Request, event, tenant_id: str, camera_id: str) -> None:
+    """Enfileira notificação de contato (WhatsApp/etc) pro evento ALPR recém-criado.
+
+    Eventos que chegam por webhook de câmera (Hikvision/Intelbras ANPR) nunca
+    passavam por aqui — só o pipeline interno do analytics/ (POST /plugins/
+    events) disparava notificação. Sem isso, uma leitura de placa nunca virava
+    mensagem de WhatsApp, mesmo com regra de notificação cadastrada.
+    """
+    if not event.image_path:
+        return
+    try:
+        arq_pool = getattr(request.app.state, "arq_redis", None)
+        if arq_pool is None:
+            return
+        await arq_pool.enqueue_job(
+            "task_dispatch_event_notifications",
+            tenant_id,
+            event.event_type,
+            event.id,
+            event.payload or {},
+            event.image_path,
+            camera_id,
+        )
+    except Exception:
+        logger.exception("Falha ao enfileirar notificação ALPR do evento %s (não crítico)", event.id)
+
+
 # ─── Hikvision ───────────────────────────────────────────────────────────────
 
 async def _handle_hikvision(request: Request, camera_id: str | None) -> dict:
@@ -479,6 +506,7 @@ async def _handle_hikvision(request: Request, camera_id: str | None) -> dict:
                 return {"ok": True, "event_id": None, "dedup": True}
 
             logger.info("ANPR Hikvision | placa=%s camera=%s", detection.plate, cam_id)
+            await _dispatch_alpr_notification(request, event, tenant_id, cam_id)
             return {"ok": True, "event_id": event.id}
         except Exception as exc:
             logger.error("Erro ao normalizar ANPR Hikvision: %s", exc)
@@ -651,6 +679,7 @@ async def intelbras_webhook(
                 return _itscam_ok(body)
 
             logger.info("ANPR Intelbras | placa=%s camera=%s", detection.plate, cam_id)
+            await _dispatch_alpr_notification(request, event, tenant_id, cam_id)
             return _itscam_ok(body)
         except Exception as exc:
             logger.error("Erro ao normalizar Intelbras ALPR: %s", exc)
@@ -739,6 +768,7 @@ async def generic_camera_webhook(
                 if event is None:
                     return {"ok": True, "manufacturer": mfr, "event_id": None, "dedup": True}
 
+                await _dispatch_alpr_notification(request, event, tenant_id, cam_id)
                 return {"ok": True, "manufacturer": mfr, "event_id": event.id}
             except Exception as exc:
                 logger.error("Erro ao normalizar %s: %s", mfr, exc)

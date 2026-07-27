@@ -21,6 +21,10 @@ class CreateCameraRequest(BaseModel):
     ia_enabled: bool = False
     manufacturer: str = Field(default="generic")
     retention_days: int = Field(default=7)
+    recording_enabled: bool = Field(
+        default=False,
+        description="Gravação contínua opt-in — ver incidente documentado em cameras/mediamtx.py antes de ligar em produção.",
+    )
     stream_quality: str = StreamQuality.HIGH
     stream_protocol: str = StreamProtocol.RTSP_PULL
     camera_type: str = Field(default="internal", pattern=r"^(internal|external|lpr|facial)$")
@@ -97,6 +101,7 @@ class UpdateCameraRequest(BaseModel):
     onvif_password: str | None = Field(default=None, max_length=500)
     manufacturer: str | None = None
     retention_days: int | None = Field(default=None)
+    recording_enabled: bool | None = None
     camera_type: str | None = Field(default=None, pattern=r"^(internal|external|lpr|facial)$")
     agent_id: str | None = None
 
@@ -136,6 +141,7 @@ class CameraResponse(BaseModel):
     onvif_username: str | None
     manufacturer: str
     retention_days: int
+    recording_enabled: bool
     stream_quality: str
     is_active: bool
     is_online: bool

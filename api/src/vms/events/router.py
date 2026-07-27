@@ -199,12 +199,39 @@ async def mediamtx_on_not_ready(body: MediaMTXOnNotReadyPayload, db: DbSession) 
     return {"ok": True}
 
 
-# NOTA (Next Sec): o webhook `/webhooks/mediamtx/segment_ready` (indexação de
-# segmento de gravação contínua) foi removido daqui — dependia de
-# `vms.recordings.repository/service`, não copiado (gravação contínua fora
-# do escopo do MVP, ver reuse-plan.md). O `mediamtx.yml` do Next Sec não deve
-# ter gravação de segmento habilitada, então o MediaMTX nunca chamaria este
-# webhook de qualquer forma.
+@router.post(
+    "/webhooks/mediamtx/on_record_segment_complete",
+    status_code=status.HTTP_200_OK,
+    summary="Webhook MediaMTX — segmento de gravação completo",
+    tags=["webhooks"],
+)
+async def mediamtx_on_record_segment_complete(
+    body: MediaMTXSegmentPayload, db: DbSession
+) -> dict:
+    """Estende o índice de cobertura (recording_windows) da câmera.
+
+    Só afeta câmeras com gravação ligada — pra as demais o hook nem chega a
+    disparar (MediaMTX só grava segmento se `record: true` no path).
+    """
+    ids = _parse_mediamtx_path(body.path)
+    if not ids:
+        return {"ok": True}
+    tenant_id, camera_id = ids
+
+    from vms.recordings.repository import RecordingWindowRepository
+    from vms.recordings.service import build_recording_service
+
+    try:
+        svc = build_recording_service(RecordingWindowRepository(db))
+        await svc.record_segment_complete(camera_id, tenant_id, body.segment_path)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception(
+            "Falha ao indexar segmento de gravação: camera=%s segment=%s",
+            camera_id, body.segment_path,
+        )
+    return {"ok": True}
 
 
 # ─── Consulta de Eventos ──────────────────────────────────────────────────────
@@ -224,6 +251,7 @@ async def list_events(
     source: str | None = Query(default=None, description="'lpr' ou 'analytics'"),
     occurred_after: datetime | None = Query(default=None),
     occurred_before: datetime | None = Query(default=None),
+    confidence_min: float | None = Query(default=None, ge=0.0, le=1.0),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> EventListResponse:
@@ -238,6 +266,7 @@ async def list_events(
         source=source,
         occurred_after=occurred_after,
         occurred_before=occurred_before,
+        confidence_min=confidence_min,
         limit=page_size,
         offset=offset,
     )
@@ -248,6 +277,168 @@ async def list_events(
             item.image_url = f"/api/v1/events/{e.id}/image"
         items.append(item)
     return EventListResponse.build(items, total, page, page_size)
+
+
+# ─── Exportação (CSV / PDF) ────────────────────────────────────────────────────
+
+_EXPORT_MAX_ROWS = 5000
+
+
+async def _fetch_export_rows(
+    db: DbSession,
+    tenant_id: str,
+    *,
+    event_type: str | None,
+    plate: str | None,
+    camera_id: str | None,
+    source: str | None,
+    occurred_after: datetime | None,
+    occurred_before: datetime | None,
+    confidence_min: float | None,
+) -> list:
+    """Busca eventos pros mesmos filtros de /events, sem o teto de page_size=100 —
+    exportação precisa de tudo que bate no filtro (até um teto de sanidade), não
+    só a página atual."""
+    svc = _event_svc(db)
+    events, _total = await svc.list_events(
+        tenant_id=tenant_id,
+        event_type=event_type,
+        plate=plate,
+        camera_id=camera_id,
+        source=source,
+        occurred_after=occurred_after,
+        occurred_before=occurred_before,
+        confidence_min=confidence_min,
+        limit=_EXPORT_MAX_ROWS,
+        offset=0,
+    )
+    return events
+
+
+async def _camera_names(db: DbSession, tenant_id: str) -> dict[str, str]:
+    """Mapa camera_id -> nome, pra exibir nome legível na exportação."""
+    stmt = select(CameraModel.id, CameraModel.name).where(CameraModel.tenant_id == tenant_id)
+    result = await db.execute(stmt)
+    return {row.id: row.name for row in result.all()}
+
+
+@router.get(
+    "/events/export/csv",
+    summary="Exportar eventos filtrados em CSV",
+    tags=["events"],
+)
+async def export_events_csv(
+    claims: CurrentUser,
+    db: DbSession,
+    event_type: str | None = Query(default=None),
+    plate: str | None = Query(default=None),
+    camera_id: str | None = Query(default=None),
+    source: str | None = Query(default=None),
+    occurred_after: datetime | None = Query(default=None),
+    occurred_before: datetime | None = Query(default=None),
+    confidence_min: float | None = Query(default=None, ge=0.0, le=1.0),
+) -> Response:
+    """Exporta os eventos que batem nos filtros ativos (até 5000 linhas) em CSV."""
+    import csv
+    import io
+
+    events = await _fetch_export_rows(
+        db, claims.tenant_id,
+        event_type=event_type, plate=plate, camera_id=camera_id, source=source,
+        occurred_after=occurred_after, occurred_before=occurred_before,
+        confidence_min=confidence_min,
+    )
+    cam_names = await _camera_names(db, claims.tenant_id)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";")
+    writer.writerow(["Placa", "Câmera", "Tipo", "Data/Hora", "Confiança (%)"])
+    for e in events:
+        writer.writerow([
+            e.plate or "",
+            cam_names.get(e.camera_id, e.camera_id or ""),
+            e.event_type,
+            e.occurred_at.strftime("%d/%m/%Y %H:%M:%S"),
+            f"{round(e.confidence * 100)}" if e.confidence is not None else "",
+        ])
+
+    filename = f"deteccoes_alpr_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        content="﻿" + buf.getvalue(),  # BOM — Excel abre acentuação correta
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get(
+    "/events/export/pdf",
+    summary="Exportar eventos filtrados em PDF (padrão ABNT, P&B)",
+    tags=["events"],
+)
+async def export_events_pdf(
+    claims: CurrentUser,
+    db: DbSession,
+    event_type: str | None = Query(default=None),
+    plate: str | None = Query(default=None),
+    camera_id: str | None = Query(default=None),
+    source: str | None = Query(default=None),
+    occurred_after: datetime | None = Query(default=None),
+    occurred_before: datetime | None = Query(default=None),
+    confidence_min: float | None = Query(default=None, ge=0.0, le=1.0),
+) -> Response:
+    """Exporta os eventos que batem nos filtros ativos (até 5000 linhas) em PDF."""
+    from vms.reports.pdf_generator import generate_pdf, render_template
+
+    events = await _fetch_export_rows(
+        db, claims.tenant_id,
+        event_type=event_type, plate=plate, camera_id=camera_id, source=source,
+        occurred_after=occurred_after, occurred_before=occurred_before,
+        confidence_min=confidence_min,
+    )
+    cam_names = await _camera_names(db, claims.tenant_id)
+
+    from vms.iam.models import TenantModel
+    tenant_row = await db.scalar(select(TenantModel).where(TenantModel.id == claims.tenant_id))
+    tenant_name = tenant_row.name if tenant_row else ""
+
+    if occurred_after and occurred_before:
+        period_label = f"{occurred_after.strftime('%d/%m/%Y %H:%M')} até {occurred_before.strftime('%d/%m/%Y %H:%M')}"
+    elif occurred_after:
+        period_label = f"a partir de {occurred_after.strftime('%d/%m/%Y %H:%M')}"
+    elif occurred_before:
+        period_label = f"até {occurred_before.strftime('%d/%m/%Y %H:%M')}"
+    else:
+        period_label = "Todo o histórico"
+
+    camera_label = cam_names.get(camera_id, camera_id) if camera_id else "Todas"
+    confidence_label = f"≥ {round(confidence_min * 100)}%" if confidence_min is not None else "Sem filtro"
+
+    items = [
+        {
+            "plate": e.plate,
+            "camera_name": cam_names.get(e.camera_id, e.camera_id or "—"),
+            "occurred_at": e.occurred_at.strftime("%d/%m/%Y %H:%M:%S"),
+            "confidence": f"{round(e.confidence * 100)}%" if e.confidence is not None else "—",
+        }
+        for e in events
+    ]
+
+    html = render_template("alpr_export", {
+        "tenant_name": tenant_name,
+        "period_label": period_label,
+        "camera_label": camera_label,
+        "plate_filter": plate,
+        "confidence_label": confidence_label,
+        "items": items,
+    })
+    pdf_bytes = generate_pdf(html)
+
+    filename = f"deteccoes_alpr_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get(

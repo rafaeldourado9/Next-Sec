@@ -4,7 +4,7 @@ import {
   ArrowLeft, Settings, Wifi, Edit2, Save, X, ShieldAlert,
   Camera as CameraIcon, Copy, Check, ExternalLink, Eye, EyeOff,
   Download, Radio, Loader2, Plus, Scan, Pencil, Trash2, SlidersHorizontal,
-  Brain, ChevronLeft, ChevronRight,
+  Brain, ChevronLeft, ChevronRight, History,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { format } from 'date-fns'
@@ -22,10 +22,11 @@ import { getEventTypeLabel, getEventTypeColor, isIntrusionEvent } from '@/consta
 import { PLUGIN_NAMES } from '@/constants/plugins'
 import { ROIEditorPanel } from '@/components/roi/ROIEditorPanel'
 import { AuthImage } from '@/components/ui/AuthImage'
+import { RecordingPlayer } from '@/components/camera/RecordingPlayer'
 import type { Camera, VmsEvent } from '@/types'
 import toast from 'react-hot-toast'
 
-type Tab = 'live' | 'info' | 'events' | 'analytics'
+type Tab = 'live' | 'info' | 'events' | 'analytics' | 'recordings'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -268,10 +269,11 @@ function WebhookSection({ camera }: { camera: Camera }) {
 }
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: 'live',      label: 'Ao Vivo',     icon: Wifi },
-  { id: 'info',      label: 'Informações', icon: Settings },
-  { id: 'events',    label: 'Eventos',     icon: ShieldAlert },
-  { id: 'analytics', label: 'Analytics',   icon: Scan },
+  { id: 'live',       label: 'Ao Vivo',     icon: Wifi },
+  { id: 'info',       label: 'Informações', icon: Settings },
+  { id: 'events',     label: 'Eventos',     icon: ShieldAlert },
+  { id: 'analytics',  label: 'Analytics',   icon: Scan },
+  { id: 'recordings', label: 'Gravações',   icon: History },
 ]
 
 export function CameraDetailPage() {
@@ -323,6 +325,16 @@ export function CameraDetailPage() {
       eventsService.list({ camera_id: id, page: eventsPage, page_size: 20 })
         .then((r) => { setEvents(r.items ?? []); setEventsTotal(r.total ?? 0) })
     }
+    if (tab === 'recordings') {
+      // Janela de 24h pra bater com o RecordingPlayer — traz mais eventos
+      // de uma vez (marcadores na timeline, não uma lista paginada).
+      eventsService.list({
+        camera_id: id,
+        page: 1,
+        page_size: 100,
+        occurred_after: new Date(Date.now() - 24 * 3600_000).toISOString(),
+      }).then((r) => setEvents(r.items ?? []))
+    }
     if (tab === 'analytics') {
       setRoisLoading(true)
       Promise.all([
@@ -356,9 +368,10 @@ export function CameraDetailPage() {
     setSaving(true) // Melhoria 13: loading state
     try {
       const updated = await camerasService.update(id, {
-        name:           editForm.name,
-        location:       editForm.location ?? undefined,
-        retention_days: editForm.retention_days,
+        name:              editForm.name,
+        location:          editForm.location ?? undefined,
+        retention_days:    editForm.retention_days,
+        recording_enabled: editForm.recording_enabled,
       })
       setCamera(updated)
       setEditing(false)
@@ -475,7 +488,7 @@ export function CameraDetailPage() {
           className="flex items-center gap-1 p-1 rounded-xl w-fit"
           style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
         >
-          {TABS.map(({ id: tid, label, icon: Icon }) => (
+          {TABS.filter(t => t.id !== 'recordings' || camera.recording_enabled).map(({ id: tid, label, icon: Icon }) => (
             <button
               key={tid}
               onClick={() => setTab(tid)}
@@ -652,6 +665,32 @@ export function CameraDetailPage() {
                 )}
               </div>
             ))}
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg p-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div>
+              <p className="text-sm text-t1 font-medium">Gravação contínua</p>
+              <p className="text-xs text-t3 mt-0.5">
+                Grava o stream localmente (retenção configurada acima). Opt-in — recomendado testar em uma câmera por vez.
+              </p>
+            </div>
+            {editing ? (
+              <button
+                type="button"
+                onClick={() => setEditForm((f) => ({ ...f, recording_enabled: !f.recording_enabled }))}
+                className={clsx('relative w-10 h-6 rounded-full transition-colors shrink-0', editForm.recording_enabled ? 'bg-accent' : 'bg-elevated')}
+                style={{ border: '1px solid var(--border)' }}
+              >
+                <span
+                  className="absolute top-0.5 w-4.5 h-4.5 rounded-full bg-white transition-transform"
+                  style={{ transform: editForm.recording_enabled ? 'translateX(18px)' : 'translateX(2px)', width: 18, height: 18 }}
+                />
+              </button>
+            ) : (
+              <Badge variant={camera.recording_enabled ? 'success' : 'default'}>
+                {camera.recording_enabled ? 'Ligada' : 'Desligada'}
+              </Badge>
+            )}
           </div>
 
           <WebhookSection camera={camera} />
@@ -844,10 +883,13 @@ export function CameraDetailPage() {
         </>
       )}
 
-      {/* Clips manuais de gravação removidos — Next Sec não tem arquivo de
-          gravação contínua para recortar (ver reuse-plan.md). O conceito
-          equivalente no Next Sec é o EventClip automático gerado por um
-          evento de analytics (ADR-010), não um recorte manual de intervalo. */}
+      {/* Gravações — timeline + player VOD sobre /mediamtx-playback/. Aba só
+          aparece se recording_enabled (ver filtro em TABS acima). */}
+      {tab === 'recordings' && camera.recording_enabled && (
+        <div className="card p-4">
+          <RecordingPlayer cameraId={camera.id} cameraName={camera.name} events={events} />
+        </div>
+      )}
 
       {/* Analytics / ROIs */}
       {tab === 'analytics' && (

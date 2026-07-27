@@ -288,10 +288,17 @@ async def publish_event(
     event = GenericDomainEvent()
     await event_bus.publish(event)
 
-    # Bridge para SSE: publica no canal tenant-specific
+    # Bridge para SSE: publica no canal tenant-specific.
+    # `data.event_type` é o que o frontend usa pra decidir se recarrega a
+    # lista (ex.: DetectionsPage.tsx) — chamadores como ingest_alpr() não
+    # incluem esse campo no payload, então cai pro routing_key (ex.:
+    # "alpr.detected") quando ausente.
     if tenant_id:
         try:
-            sse_message = json.dumps({"event": routing_key, "data": payload}, default=str)
+            sse_message = json.dumps(
+                {"event": routing_key, "data": {**payload, "event_type": payload.get("event_type", routing_key)}},
+                default=str,
+            )
             await event_bus._redis.publish(f"sse:{tenant_id}", sse_message)
         except Exception:
             logger.exception("Falha ao publicar SSE para tenant %s", tenant_id)

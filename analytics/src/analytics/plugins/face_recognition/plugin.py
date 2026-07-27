@@ -139,19 +139,35 @@ class FaceRecognitionPlugin(AnalyticsPlugin):
             logger.exception("Falha ao detectar rostos no frame (câmera %s)", metadata.camera_id)
             return []
 
+        frame_h, frame_w = frame.shape[:2]
         results: list[AnalyticsResult] = []
         for face in faces:
             match = best_match(face.normed_embedding, watchlist, self._similarity_threshold)
             if match is None:
                 continue
             profile_id, similarity = match
+            # face.bbox vem em pixels (x1,y1,x2,y2) — normaliza pra 0.0-1.0,
+            # mesmo formato usado pelo plugin de intrusão, pra que o overlay
+            # vermelho desenhado no WhatsApp (tasks.py::_draw_bbox_overlay)
+            # também funcione pra eventos de reconhecimento facial.
+            x1, y1, x2, y2 = face.bbox.tolist()
+            bbox = [
+                max(0.0, x1 / frame_w),
+                max(0.0, y1 / frame_h),
+                min(1.0, x2 / frame_w),
+                min(1.0, y2 / frame_h),
+            ]
             results.append(
                 AnalyticsResult(
                     plugin=self.name,
                     camera_id=metadata.camera_id,
                     tenant_id=metadata.tenant_id,
                     event_type="analytics.face.recognized",
-                    payload={"face_profile_id": profile_id, "similarity": round(similarity, 3)},
+                    payload={
+                        "face_profile_id": profile_id,
+                        "similarity": round(similarity, 3),
+                        "bbox": bbox,
+                    },
                     occurred_at=metadata.timestamp,
                     confidence=similarity,
                 )

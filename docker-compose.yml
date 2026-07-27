@@ -71,15 +71,15 @@ services:
       - "1935:1935"   # RTMP (push do edge agent)
     volumes:
       - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+      - recordings:/recordings
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9997/v3/config/global/get"]
       interval: 30s
       timeout: 10s
       retries: 3
     networks: [next_sec]
-    # NOTA: mediamtx.yml herdado do vms/ ainda tem gravação contínua habilitada —
-    # revisar/desligar (recordPath) durante a fase de dados/backend, já que o
-    # Next Sec não persiste vídeo contínuo, só o clipe de 5-10s por evento.
+    # Gravação contínua é opt-in por câmera (cameras.recording_enabled),
+    # ligada via API pelo cameras/mediamtx.py — ver infra/mediamtx/mediamtx.yml.
 
   # ─── API Service ──────────────────────────────────────────────────────────
   api:
@@ -350,6 +350,7 @@ volumes:
   reports:
   minio_data:
   arcanum_data:
+  recordings:
 
 networks:
   next_sec:
