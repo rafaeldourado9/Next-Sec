@@ -9,3 +9,10 @@
 services:
   nginx:
     ports: !reset []
+    networks:
+      - next_sec
+      - next_sec_edge
+
+networks:
+  next_sec_edge:
+    external: true
