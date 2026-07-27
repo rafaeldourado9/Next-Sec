@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, Trash2, ScanFace, ShieldCheck } from 'lucide-react'
+import { Plus, Trash2, ScanFace, ShieldCheck, Search } from 'lucide-react'
 import { format } from 'date-fns'
-import { watchlistService, type FaceProfile } from '@/services/watchlist'
+import { watchlistService, type FaceProfile, type FaceSearchMatch } from '@/services/watchlist'
 import { lgpdService } from '@/services/lgpd'
-import { PageSpinner } from '@/components/ui/Spinner'
+import { PageSpinner, Spinner } from '@/components/ui/Spinner'
 import { Modal } from '@/components/ui/Modal'
+import { AuthImage } from '@/components/ui/AuthImage'
 import { usePermission } from '@/hooks/usePermission'
 import toast from 'react-hot-toast'
 
@@ -20,6 +21,10 @@ export function WatchlistPage() {
   const [consentBlocked, setConsentBlocked] = useState(false)
   const [enablingConsent, setEnablingConsent] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const [searchingProfile, setSearchingProfile] = useState<FaceProfile | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchResults, setSearchResults] = useState<FaceSearchMatch[] | null>(null)
 
   const load = () => {
     watchlistService.list()
@@ -78,6 +83,21 @@ export function WatchlistPage() {
     }
   }
 
+  const handleSearch = async (profile: FaceProfile) => {
+    setSearchingProfile(profile)
+    setSearchResults(null)
+    setSearching(true)
+    try {
+      const results = await watchlistService.search(profile.id)
+      setSearchResults(results)
+    } catch {
+      toast.error('Erro ao buscar rosto nos eventos')
+      setSearchingProfile(null)
+    } finally {
+      setSearching(false)
+    }
+  }
+
   const handleDelete = async (profile: FaceProfile) => {
     if (!confirm(`Remover "${profile.name}" da watchlist?`)) return
     try {
@@ -131,16 +151,57 @@ export function WatchlistPage() {
               </div>
               <div className="flex items-center justify-between pt-2 border-t text-xs text-t3" style={{ borderColor: 'var(--border)' }}>
                 <span>{format(new Date(profile.created_at), 'dd/MM/yyyy')}</span>
-                {isAdmin && (
-                  <button className="btn btn-ghost w-7 h-7 p-0 text-danger" onClick={() => handleDelete(profile)} title="Remover">
-                    <Trash2 size={14} />
+                <div className="flex items-center gap-1">
+                  <button
+                    className="btn btn-ghost w-7 h-7 p-0"
+                    onClick={() => handleSearch(profile)}
+                    title="Buscar nos eventos"
+                  >
+                    <Search size={14} />
                   </button>
-                )}
+                  {isAdmin && (
+                    <button className="btn btn-ghost w-7 h-7 p-0 text-danger" onClick={() => handleDelete(profile)} title="Remover">
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           ))}
         </div>
       )}
+
+      <Modal
+        open={!!searchingProfile}
+        onClose={() => { setSearchingProfile(null); setSearchResults(null) }}
+        title={`Buscar "${searchingProfile?.name ?? ''}" nos eventos`}
+        size="md"
+      >
+        {searching ? (
+          <div className="py-10 flex justify-center"><Spinner size="md" /></div>
+        ) : !searchResults || searchResults.length === 0 ? (
+          <p className="text-sm text-t3 text-center py-8">
+            {searchResults ? 'Nenhum evento com esse rosto encontrado.' : ''}
+          </p>
+        ) : (
+          <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+            {searchResults.map((m) => (
+              <div key={m.event_id} className="flex items-center gap-3 p-2 rounded-lg" style={{ background: 'var(--elevated)' }}>
+                <div className="w-16 h-10 rounded overflow-hidden shrink-0">
+                  <AuthImage src={m.snapshot_url} alt="snapshot" className="w-full h-full object-cover" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-t1 truncate">{format(new Date(m.occurred_at), 'dd/MM/yyyy HH:mm:ss')}</p>
+                  <p className="text-[11px] text-t3 truncate">Câmera {m.camera_id.slice(0, 8)}</p>
+                </div>
+                <span className="text-xs font-semibold text-accent shrink-0">
+                  {Math.round(m.similarity * 100)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
 
       <Modal
         open={showCreate}

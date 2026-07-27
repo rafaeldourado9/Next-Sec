@@ -82,3 +82,118 @@ async def task_dispatch_notification(
             except Exception:
                 pass
             raise
+
+
+_EVENT_TITLES = {
+    "analytics.intrusion.crossed": "🚨 Cerca Virtual",
+    "analytics.face.recognized": "👤 Reconhecimento Facial",
+}
+_CLASS_LABELS = {
+    "person": "Pessoa",
+    "car": "Veículo",
+    "motorcycle": "Moto",
+    "bus": "Ônibus",
+    "truck": "Caminhão",
+    "bicycle": "Bicicleta",
+}
+_DIRECTION_LABELS = {
+    "enter": "entrou na área",
+    "exit": "saiu da área",
+}
+
+
+def _build_friendly_message(
+    event_type: str,
+    payload: dict,
+    camera_name: str | None,
+) -> str:
+    """Monta a mensagem de notificação legível — antes era literalmente
+    o event_type cru (ex.: "Alerta Next Sec: analytics.intrusion.crossed
+    detectado"), o que não diz nada útil pra quem recebe (achado: usuário
+    reportou que a mensagem chegava mas o texto era ilegível).
+    """
+    lines = [_EVENT_TITLES.get(event_type, "🔔 Alerta Next Sec")]
+    if camera_name:
+        lines.append(f"Câmera: {camera_name}")
+    roi_name = payload.get("roi_name")
+    if roi_name:
+        lines.append(f"Zona: {roi_name}")
+    cls = _CLASS_LABELS.get(payload.get("class"), payload.get("class"))
+    direction = _DIRECTION_LABELS.get(payload.get("direction"))
+    if cls and direction:
+        lines.append(f"{cls} {direction}")
+    confidence = payload.get("confidence")
+    if confidence is not None:
+        lines.append(f"Confiança: {round(float(confidence) * 100)}%")
+    return "\n".join(lines)
+
+
+async def task_dispatch_event_notifications(
+    ctx: dict,
+    tenant_id: str,
+    event_type: str,
+    event_id: str,
+    payload: dict,
+    snapshot_path: str | None,
+    camera_id: str | None = None,
+) -> None:
+    """Gera clipe (best-effort) e dispara notificações de contato (WhatsApp/etc)
+    pra um evento de analytics — em background, fora do request de ingestão.
+
+    Antes rodava tudo síncrono dentro de POST /plugins/events (ver
+    plugins/router.py) — cada notificação pode envolver retries lentos (ex.:
+    número com erro do lado do WhatsApp faz 3 tentativas com backoff, ~3.5s),
+    e isso atrasava o evento aparecer em tempo real pro usuário mesmo o
+    registro em si sendo instantâneo (achado: usuário reportou demora
+    perceptível). Enfileirado via ARQ — o evento já está salvo e visível
+    (SSE já disparado antes desta task existir) antes desta task nem começar.
+    """
+    import os
+
+    from vms.infrastructure.database import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as db:
+        if not snapshot_path:
+            return
+
+        try:
+            from vms.event_clips.service import build_event_clip_service
+
+            await build_event_clip_service(db).generate_and_upload(
+                vms_event_id=event_id, tenant_id=tenant_id, image_path=snapshot_path,
+            )
+        except Exception:
+            logger.exception("Falha ao gerar clipe do evento %s (não crítico)", event_id)
+            await db.rollback()
+
+        try:
+            from vms.notifications.service import build_notification_service
+
+            image_bytes = None
+            full_path = f"/snapshots/{snapshot_path}"
+            if os.path.isfile(full_path):
+                with open(full_path, "rb") as f:
+                    image_bytes = f.read()
+
+            camera_name = None
+            if camera_id:
+                from sqlalchemy import select
+                from vms.cameras.models import CameraModel
+
+                camera_name = await db.scalar(
+                    select(CameraModel.name).where(CameraModel.id == camera_id)
+                )
+
+            await build_notification_service(db).evaluate_and_dispatch(
+                tenant_id=tenant_id,
+                event_type=event_type,
+                event_id=event_id,
+                payload=payload or {},
+                message=_build_friendly_message(event_type, payload or {}, camera_name),
+                media_bytes=image_bytes,
+                media_type="image",
+                mime_type="image/jpeg",
+            )
+        except Exception:
+            logger.exception("Falha ao notificar evento %s (não crítico)", event_id)

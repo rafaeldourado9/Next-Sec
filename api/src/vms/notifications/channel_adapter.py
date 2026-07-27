@@ -7,6 +7,7 @@ consome a interface.
 """
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Protocol
 
@@ -21,7 +22,13 @@ class ChannelAdapter(Protocol):
     """Canal de envio de notificação para um contato (telefone)."""
 
     async def send(
-        self, *, destination: str, message: str, media_url: str | None = None
+        self,
+        *,
+        destination: str,
+        message: str,
+        media_bytes: bytes | None = None,
+        media_type: str = "image",
+        mime_type: str = "image/jpeg",
     ) -> tuple[bool, int | None, str]:
         """Envia a notificação. Retorna (sucesso, status_code, corpo_da_resposta)."""
         ...
@@ -37,24 +44,34 @@ class WhatsAppArcanumAdapter:
         self._client = client
 
     async def send(
-        self, *, destination: str, message: str, media_url: str | None = None
+        self,
+        *,
+        destination: str,
+        message: str,
+        media_bytes: bytes | None = None,
+        media_type: str = "image",
+        mime_type: str = "image/jpeg",
     ) -> tuple[bool, int | None, str]:
-        """Envia texto (e mídia, se `media_url` for informado) via Arcanum.
+        """Envia texto (e mídia, se `media_bytes` for informado) via Arcanum.
 
         `destination` é o telefone em E.164 (ex: +5511999999999) — o Arcanum
-        espera o número sem o `+` no path da API.
+        espera o número sem o `+` no path da API. Mídia vai em base64 no
+        campo `media` — o Arcanum não busca URL (`SendMedia` recusa com
+        "URL-based media send not supported" — achado em teste local: era
+        por isso que nenhuma foto/vídeo de evento chegava, o adapter mandava
+        uma URL de storage que o gateway simplesmente rejeitava).
         """
         phone = destination.lstrip("+")
-        endpoint = "sendMedia" if media_url else "sendText"
+        endpoint = "sendMedia" if media_bytes else "sendText"
         url = f"{self._base_url}/api/message/{endpoint}/{self._instance}"
 
         body: dict[str, object] = {"number": phone}
-        if media_url:
+        if media_bytes:
             body.update({
-                "mediatype": "video",
-                "mimetype": "video/mp4",
+                "mediatype": media_type,
+                "mimetype": mime_type,
                 "caption": message,
-                "media": media_url,
+                "media": base64.b64encode(media_bytes).decode("ascii"),
             })
         else:
             body["text"] = message

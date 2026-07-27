@@ -51,6 +51,8 @@ class Settings(BaseSettings):
 
     # ─── Analytics ────────────────────────────────────────────────────────
     analytics_api_key: str = Field(default="dev-analytics-key")
+    # Endpoint HTTP interno do serviço analytics (busca facial sob demanda)
+    analytics_internal_url: str = Field(default="http://analytics:8001")
 
     # NOTA (Next Sec): recordings_path/recordings_disk_quota_pct e o bucket
     # minio_bucket_recordings vinham do vms/ para gravação contínua (fora do

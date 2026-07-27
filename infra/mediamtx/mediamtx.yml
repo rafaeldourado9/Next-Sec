@@ -122,41 +122,36 @@ pathDefaults:
   sourceOnDemand: no
   maxReaders: 100
 
-  # ── Gravação 24/7 ──────────────────────────────────────────────────────────
-  record: yes
-  # NOTA: recordPath NÃO deve ter extensão — MediaMTX adiciona baseado no recordFormat
-  # %f = microseconds — obrigatório no MediaMTX v1.17+ para garantir unicidade
-  recordPath: /recordings/%path/%Y/%m/%d/%H-%M-%S-%f
-  recordFormat: fmp4
-  recordPartDuration: 10s
-  recordSegmentDuration: 60s
-  recordDeleteAfter: 0s    # 0 = nunca deletar automaticamente (VMS controla retenção)
+  # ── Gravação contínua — DESABILITADA (fora do escopo do Next Sec, ver
+  # .genesis/architecture/reuse-plan.md e ADR-013). O MediaMTX aqui só serve
+  # para o serviço analytics/ ler frames via RTSP — não persiste vídeo.
+  record: no
 
   # ── Hooks de status de stream ──────────────────────────────────────────────
+  # wget no lugar de curl — evita depender de `apk add curl` (achado durante
+  # teste local: repositório apk do Alpine falhava por erro de certificado
+  # TLS neste ambiente; wget já vem na imagem base, sem apk add nenhum).
+  #
   # on_ready: câmera ficou online → VMS marca camera.is_online = True
   runOnReady: >-
-    curl -s -X POST http://api:8000/api/v1/webhooks/mediamtx/on_ready
-    -H "Content-Type: application/json"
-    -d "{\"path\":\"$MTX_PATH\",\"source_type\":\"$MTX_SOURCE_TYPE\",\"source_id\":\"$MTX_SOURCE_ID\"}"
+    wget -qO- --header="Content-Type: application/json"
+    --post-data="{\"path\":\"$MTX_PATH\",\"source_type\":\"$MTX_SOURCE_TYPE\",\"source_id\":\"$MTX_SOURCE_ID\"}"
+    http://api:8000/api/v1/webhooks/mediamtx/on_ready
   runOnReadyRestart: no
 
   # on_not_ready: câmera ficou offline → VMS marca camera.is_online = False
   runOnNotReady: >-
-    curl -s -X POST http://api:8000/api/v1/webhooks/mediamtx/on_not_ready
-    -H "Content-Type: application/json"
-    -d "{\"path\":\"$MTX_PATH\",\"source_type\":\"$MTX_SOURCE_TYPE\",\"source_id\":\"$MTX_SOURCE_ID\"}"
+    wget -qO- --header="Content-Type: application/json"
+    --post-data="{\"path\":\"$MTX_PATH\",\"source_type\":\"$MTX_SOURCE_TYPE\",\"source_id\":\"$MTX_SOURCE_ID\"}"
+    http://api:8000/api/v1/webhooks/mediamtx/on_not_ready
 
   # on_read: viewer conectou — para métricas de audiência (opcional)
   runOnRead: ""
   runOnUnread: ""
 
-  # ── Hook de segmento pronto ────────────────────────────────────────────────
-  # Disparado a cada 60s quando segmento de gravação é completado.
-  # VMS indexa o segmento (RecordingSegment) e verifica retenção.
-  runOnRecordSegmentComplete: >-
-    curl -s -X POST http://api:8000/api/v1/webhooks/mediamtx/segment_ready
-    -H "Content-Type: application/json"
-    -d "{\"path\":\"$MTX_PATH\",\"segment_path\":\"$MTX_SEGMENT_PATH\",\"duration\":\"$MTX_SEGMENT_DURATION\"}"
+  # runOnRecordSegmentComplete removido — sem gravação, não há segmento;
+  # o endpoint /webhooks/mediamtx/segment_ready também foi removido do
+  # events/router.py (ver reuse-plan.md).
 
 # ─── Paths estáticos ──────────────────────────────────────────────────────────
 # Câmeras adicionadas dinamicamente pelo cameras/mediamtx.py via API v3.

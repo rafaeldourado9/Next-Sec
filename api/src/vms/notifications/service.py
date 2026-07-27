@@ -1,6 +1,7 @@
 """Application service de notificações — casos de uso de regras e dispatch."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 
@@ -91,45 +92,59 @@ class NotificationService:
         payload: dict,
         *,
         message: str | None = None,
-        media_url: str | None = None,
+        media_bytes: bytes | None = None,
+        media_type: str = "image",
+        mime_type: str = "image/jpeg",
     ) -> list[NotificationLog]:
         """
         Avalia regras ativas do tenant e dispara a notificação (webhook ou
         canal/contato, conforme `destination_type` de cada regra) para as
         que casam com `event_type`.
 
-        `message`/`media_url` só são usados por regras `destination_type=contact`
+        `message`/`media_bytes` só são usados por regras `destination_type=contact`
         — regras `webhook` continuam usando o payload bruto (comportamento herdado).
         Persiste um NotificationLog para cada tentativa de dispatch.
         """
         rules = await self._rules.list_by_tenant(tenant_id, active_only=True)
         matching = [r for r in rules if r.matches(event_type)]
 
-        logs: list[NotificationLog] = []
-        for rule in matching:
+        # Dispara todas as regras em paralelo — não sequencial. Uma regra
+        # lenta ou quebrada (ex.: número de WhatsApp que sempre falha e faz
+        # 3 tentativas com backoff, ~3.5s) não pode atrasar a notificação das
+        # outras regras que funcionam normalmente (achado em teste local:
+        # regra ruim no meio da lista segurava a notificação da regra boa
+        # até terminar de tentar e desistir).
+        async def _dispatch_one(rule: NotificationRule) -> NotificationLog | None:
             if rule.destination_type == "contact":
                 if not self._contacts or not rule.contact_id:
                     logger.warning(
                         "Regra %s é destination_type=contact mas sem contact_id/repo — pulando",
                         rule.id,
                     )
-                    continue
+                    return None
                 contact = await self._contacts.get_by_id(rule.contact_id, tenant_id)
                 if not contact or not contact.is_active:
                     logger.info(
                         "Contato %s inativo/removido — notificação da regra %s não enviada",
                         rule.contact_id, rule.id,
                     )
-                    continue
-                log = await dispatch_channel(
+                    return None
+                return await dispatch_channel(
                     rule, event_type, event_id,
                     phone_number=contact.phone_number,
                     message=message or f"Alerta: {event_type}",
-                    media_url=media_url,
+                    media_bytes=media_bytes,
+                    media_type=media_type,
+                    mime_type=mime_type,
                 )
-            else:
-                log = await dispatch_webhook(rule, event_type, event_id, payload)
+            return await dispatch_webhook(rule, event_type, event_id, payload)
 
+        results = await asyncio.gather(*(_dispatch_one(rule) for rule in matching))
+
+        logs: list[NotificationLog] = []
+        for log in results:
+            if log is None:
+                continue
             saved = await self._logs.create(log)
             logs.append(saved)
 

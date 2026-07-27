@@ -11,6 +11,15 @@ interface Props {
   streamUrl?: string
 }
 
+// Quadrilátero central, ocupando a maior parte do frame — ponto de partida
+// pro usuário só arrastar os 4 cantos até a zona desejada.
+const DEFAULT_QUAD: number[][] = [
+  [0.15, 0.15],
+  [0.85, 0.15],
+  [0.85, 0.85],
+  [0.15, 0.85],
+]
+
 export function PolygonEditor({ cameraId, polygon, onChange, disabled, streamUrl }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null)
@@ -26,6 +35,18 @@ export function PolygonEditor({ cameraId, polygon, onChange, disabled, streamUrl
       .finally(() => setLoading(false))
   }, [cameraId, streamUrl])
 
+  // A zona é sempre um quadrilátero de 4 cantos arrastáveis — sem clique pra
+  // adicionar ponto (era a origem de um bug real: clicar num vértice já
+  // existente também borbulhava um `click` pro SVG por baixo, adicionando um
+  // ponto duplicado ali mesmo e deixando o polígono auto-intersectante, que o
+  // point-in-polygon do plugin de intrusion avaliava errado — achado durante
+  // teste local, "passou muita gente na cerca e não detectou"). Se a zona
+  // ainda não tem os 4 pontos (nova ROI), inicializa com um retângulo padrão.
+  useEffect(() => {
+    if (polygon.length !== 4) onChange(DEFAULT_QUAD)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const toNormalized = useCallback((e: React.MouseEvent): [number, number] | null => {
     const el = containerRef.current
     if (!el) return null
@@ -34,13 +55,6 @@ export function PolygonEditor({ cameraId, polygon, onChange, disabled, streamUrl
     const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height))
     return [round4(x), round4(y)]
   }, [])
-
-  const handleClick = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
-    if (disabled || dragging !== null) return
-    const pt = toNormalized(e)
-    if (!pt) return
-    onChange([...polygon, pt])
-  }, [disabled, dragging, polygon, onChange, toNormalized])
 
   const handleVertexMouseDown = useCallback((idx: number, e: React.MouseEvent) => {
     if (disabled) return
@@ -61,11 +75,9 @@ export function PolygonEditor({ cameraId, polygon, onChange, disabled, streamUrl
     setDragging(null)
   }, [])
 
-  const handleVertexDoubleClick = useCallback((idx: number, e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (disabled || polygon.length <= 3) return
-    onChange(polygon.filter((_, i) => i !== idx))
-  }, [disabled, polygon, onChange])
+  const handleReset = useCallback(() => {
+    onChange(DEFAULT_QUAD)
+  }, [onChange])
 
   const points = polygon.map(([x, y]) => `${x},${y}`).join(' ')
 
@@ -113,21 +125,11 @@ export function PolygonEditor({ cameraId, polygon, onChange, disabled, streamUrl
           className="absolute inset-0 w-full h-full"
           viewBox="0 0 1 1"
           preserveAspectRatio="none"
-          onClick={handleClick}
-          style={{ cursor: disabled ? 'default' : 'crosshair' }}
         >
-          {polygon.length >= 3 && (
+          {polygon.length === 4 && (
             <polygon
               points={points}
               fill="rgba(59,130,246,0.2)"
-              stroke="rgba(59,130,246,0.8)"
-              strokeWidth="0.003"
-            />
-          )}
-          {polygon.length > 0 && polygon.length < 3 && (
-            <polyline
-              points={points}
-              fill="none"
               stroke="rgba(59,130,246,0.8)"
               strokeWidth="0.003"
             />
@@ -143,7 +145,6 @@ export function PolygonEditor({ cameraId, polygon, onChange, disabled, streamUrl
               strokeWidth="0.003"
               style={{ cursor: disabled ? 'default' : 'grab' }}
               onMouseDown={(e) => handleVertexMouseDown(i, e)}
-              onDoubleClick={(e) => handleVertexDoubleClick(i, e)}
             />
           ))}
         </svg>
@@ -151,15 +152,13 @@ export function PolygonEditor({ cameraId, polygon, onChange, disabled, streamUrl
 
       {!disabled && (
         <p className="text-[11px] text-t3">
-          Clique para adicionar pontos. Arraste para mover. Duplo-clique para remover.
-          {polygon.length > 0 && (
-            <button
-              className="ml-2 text-red-400 hover:text-red-300 underline"
-              onClick={() => onChange([])}
-            >
-              Limpar tudo
-            </button>
-          )}
+          Arraste os 4 cantos para ajustar a zona.
+          <button
+            className="ml-2 text-red-400 hover:text-red-300 underline"
+            onClick={handleReset}
+          >
+            Redefinir
+          </button>
         </p>
       )}
     </div>

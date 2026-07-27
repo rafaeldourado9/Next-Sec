@@ -154,6 +154,7 @@ class Agent:
     streams_running: int = 0
     streams_failed: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    is_active: bool = True
 
     def mark_online(
         self,

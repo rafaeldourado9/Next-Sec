@@ -17,3 +17,13 @@ class FaceProfileResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class FaceSearchMatchResponse(BaseModel):
+    """Um evento onde o rosto cadastrado foi encontrado."""
+
+    event_id: str
+    camera_id: str
+    similarity: float
+    occurred_at: datetime
+    snapshot_url: str

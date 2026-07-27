@@ -7,6 +7,7 @@ import gc
 import importlib
 import logging
 import pkgutil
+import re
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +66,8 @@ class Orchestrator:
         self._plugin_uses_shared: dict[str, str] = {}  # plugin_name -> engine_name
         self._vms_client = VMSClient()
         self._running = False
-        self._tasks: list[asyncio.Task[None]] = []
+        self._camera_tasks: dict[str, asyncio.Task[None]] = {}
+        self._discovery_task: asyncio.Task[None] | None = None
         self._detection_cache = DetectionCache(max_empty_frames=30, ttl_seconds=60.0)
         self._metrics = MetricsCollector()
         self._gpu_semaphore: asyncio.Semaphore | None = None
@@ -78,6 +80,13 @@ class Orchestrator:
         """Plugins carregados."""
         return list(self._plugins)
 
+    # face_recognition não roda mais como plugin contínuo (frame a frame) — virou
+    # busca sob demanda (POST /face-search, ver analytics/core/face_search.py),
+    # disparada pelo usuário a partir de um rosto já cadastrado na watchlist,
+    # contra snapshots de eventos já existentes. Rodar isso em todo frame de
+    # toda câmera era caro e não era o que fazia sentido pro produto.
+    _LIVE_PLUGIN_BLOCKLIST = {"face_recognition"}
+
     async def load_plugins(self) -> None:
         """Escaneia analytics/plugins/*/plugin.py e carrega todos os plugins."""
         settings = get_settings()
@@ -85,7 +94,7 @@ class Orchestrator:
         plugins_path = Path(plugins_pkg.__path__[0])
 
         for _finder, name, ispkg in pkgutil.iter_modules([str(plugins_path)]):
-            if not ispkg:
+            if not ispkg or name in self._LIVE_PLUGIN_BLOCKLIST:
                 continue
             try:
                 mod = importlib.import_module(f"analytics.plugins.{name}.plugin")
@@ -222,69 +231,148 @@ class Orchestrator:
         if not cameras:
             logger.warning("Nenhuma câmera disponível via VMS API após 10 tentativas")
 
-        settings = get_settings()
-
-        # Tenta buscar ROIs da API; fallback para zones.yaml local
-        api_rois = await self._vms_client.list_rois()
-        if api_rois:
-            zones_config: dict[str, list[ROIConfig]] = {}
-            for roi in api_rois:
-                # Zona com horário de ativação fora da janela atual — não processar.
-                # A API já resolve isso em `is_armed_now` (ver vms.analytics.schedule);
-                # o refresh de 60s abaixo garante que a zona volta a ser considerada
-                # assim que a janela armada começar.
-                if not roi.get("is_armed_now", True):
-                    continue
-                cam_id = roi["camera_id"]
-                zones_config.setdefault(cam_id, []).append(
-                    ROIConfig(
-                        id=roi["id"],
-                        name=roi["name"],
-                        ia_type=roi["plugin_id"],
-                        polygon_points=roi["polygon_points"],
-                        config=roi.get("config", {}),
-                    )
-                )
-            logger.info(
-                "ROIs carregadas da API: %d zonas em %d câmeras", len(api_rois), len(zones_config)
-            )
-        else:
-            zones_config = load_zones_config()
-            logger.info("ROIs locais (zones.yaml): %d câmeras configuradas", len(zones_config))
+        zones_config = await self._fetch_zones_config()
 
         for cam in cameras:
-            if not cam.get("is_online", False):
-                logger.debug("Câmera %s offline — ignorando", cam["id"])
-                continue
-
-            # Tenta construir RTSP URL direto do MediaMTX (sem token JWT)
-            rtsp_url = self._build_mediamtx_rtsp(cam)
-            if not rtsp_url:
-                # Fallback: usa token da VMS API
-                token_data = await self._vms_client.get_stream_token(cam["id"])
-                if not token_data:
-                    logger.warning("Sem token de stream para câmera %s", cam["id"])
-                    continue
-                rtsp_url = token_data["rtsp_url"]
-
-            task = asyncio.create_task(
-                self._process_camera(
-                    camera_id=cam["id"],
-                    tenant_id=cam.get("tenant_id", ""),
-                    rtsp_url=rtsp_url,
-                    fps=settings.analytics_fps,
-                    zones=zones_config.get(cam["id"], []),
-                )
-            )
-            self._tasks.append(task)
+            await self._maybe_start_camera_task(cam, zones_config)
 
         self._batch_task = asyncio.create_task(self._batch_inference_loop(), name="batch-inference")
+        # Câmeras adicionadas/ativadas depois do startup não eram descobertas
+        # nunca mais — o ROI delas nunca chegava a rodar (achado durante teste
+        # local: câmera criada com o processo já no ar ficava sem análise até
+        # reiniciar o container). Re-varre periodicamente.
+        self._discovery_task = asyncio.create_task(
+            self._camera_discovery_loop(), name="camera-discovery"
+        )
 
         logger.info(
             "Orchestrator iniciado: %d câmeras online, %d plugins ativos",
-            len(self._tasks),
+            len(self._camera_tasks),
             len(self._plugins),
         )
+
+    async def _fetch_zones_config(self) -> dict[str, list[ROIConfig]]:
+        """Busca ROIs da API (todas as câmeras); fallback para zones.yaml local."""
+        api_rois = await self._vms_client.list_rois()
+        if not api_rois:
+            zones_config = load_zones_config()
+            logger.info("ROIs locais (zones.yaml): %d câmeras configuradas", len(zones_config))
+            return zones_config
+
+        zones_config: dict[str, list[ROIConfig]] = {}
+        for roi in api_rois:
+            # Zona com horário de ativação fora da janela atual — não processar.
+            # A API já resolve isso em `is_armed_now` (ver vms.analytics.schedule);
+            # o refresh de 60s abaixo garante que a zona volta a ser considerada
+            # assim que a janela armada começar.
+            if not roi.get("is_armed_now", True):
+                continue
+            cam_id = roi["camera_id"]
+            zones_config.setdefault(cam_id, []).append(
+                ROIConfig(
+                    id=roi["id"],
+                    name=roi["name"],
+                    ia_type=roi["plugin_id"],
+                    polygon_points=roi["polygon_points"],
+                    config=roi.get("config", {}),
+                )
+            )
+        logger.info(
+            "ROIs carregadas da API: %d zonas em %d câmeras", len(api_rois), len(zones_config)
+        )
+        return zones_config
+
+    async def _maybe_start_camera_task(
+        self, cam: dict, zones_config: dict[str, list[ROIConfig]]
+    ) -> None:
+        """Inicia a task de processamento da câmera, se online e ainda não rastreada."""
+        cam_id = cam["id"]
+        if cam_id in self._camera_tasks:
+            return
+        if not cam.get("is_online", False):
+            logger.debug("Câmera %s offline — ignorando", cam_id)
+            return
+
+        settings = get_settings()
+
+        # Volta a ler pelo MediaMTX (como era antes) em vez de conectar direto
+        # na câmera. Cheguei a mudar pra conexão direta pra não depender do
+        # ciclo de vida do path "sourceOnDemand" (só existe com viewer
+        # assistindo) — mas isso criava uma SEGUNDA conexão RTSP simultânea
+        # à câmera (MediaMTX + analytics), e essa câmera especificamente não
+        # tolera bem 2 clientes concorrentes (achado em teste local: aumento
+        # de reconexões, e depois o próprio muxer HLS do MediaMTX passou a
+        # crashar com "too many reordered frames"). Como o analytics agora
+        # é um leitor PERMANENTE do path (roda em loop enquanto a câmera
+        # estiver online), ele sozinho já mantém o path sempre "quente" —
+        # não fica mais refém de um viewer humano estar olhando. Isso resolve
+        # o problema original (captura não pode depender do streaming) sem
+        # precisar de uma segunda conexão física à câmera.
+        rtsp_url = self._build_mediamtx_rtsp(cam)
+        if not rtsp_url:
+            # Câmeras sem path MediaMTX ainda provisionado: cai pro RTSP
+            # nativo direto como último recurso.
+            rtsp_url = cam.get("rtsp_url")
+        if not rtsp_url:
+            token_data = await self._vms_client.get_stream_token(cam_id)
+            if not token_data:
+                logger.warning("Sem token de stream para câmera %s", cam_id)
+                return
+            rtsp_url = token_data["rtsp_url"]
+
+        task = asyncio.create_task(
+            self._process_camera(
+                camera_id=cam_id,
+                tenant_id=cam.get("tenant_id", ""),
+                rtsp_url=rtsp_url,
+                fps=settings.analytics_fps,
+                zones=zones_config.get(cam_id, []),
+            )
+        )
+        self._camera_tasks[cam_id] = task
+        logger.info("Câmera %s entrou online — processamento iniciado", cam_id)
+
+    async def _camera_discovery_loop(self, interval: float = 20.0) -> None:
+        """Re-varre a lista de câmeras periodicamente.
+
+        Pega câmeras que ficaram online (ou foram criadas) depois do startup,
+        e derruba a task de câmeras que saíram/foram desativadas.
+        """
+        while self._running:
+            await asyncio.sleep(interval)
+            try:
+                cameras = await self._vms_client.list_cameras()
+            except Exception:
+                logger.exception("Falha ao re-listar câmeras — tentando de novo em %ds", interval)
+                continue
+
+            zones_config = await self._fetch_zones_config()
+            online_ids = {cam["id"] for cam in cameras if cam.get("is_online", False)}
+
+            for cam in cameras:
+                await self._maybe_start_camera_task(cam, zones_config)
+
+            for cam_id in list(self._camera_tasks):
+                if cam_id not in online_ids:
+                    logger.info("Câmera %s saiu — encerrando processamento", cam_id)
+                    task = self._camera_tasks.pop(cam_id)
+                    task.cancel()
+
+    def _prefer_substream(self, rtsp_url: str, manufacturer: str | None) -> str:
+        """Reescreve URL RTSP da Hikvision pro sub-stream (ex: .../Channels/101 -> .../Channels/102).
+
+        Convenção Hikvision: "Channels/{canal}01" é o stream principal (full
+        HD, usado por MediaMTX/preview), "Channels/{canal}02" é o sub-stream
+        (resolução menor, mesmo encoder de vídeo mas perfil mais leve).
+        Só reescreve se o padrão bater e o fabricante for hikvision — outras
+        marcas/URLs ficam como estão.
+        """
+        if (manufacturer or "").lower() != "hikvision":
+            return rtsp_url
+        match = re.search(r"/Streaming/Channels/(\d+)01(?=$|[/?])", rtsp_url)
+        if not match:
+            return rtsp_url
+        return rtsp_url[: match.start(1)] + match.group(1) + "02" + rtsp_url[match.end(1) + 2 :]
 
     def _build_mediamtx_rtsp(self, camera: dict) -> str | None:
         """
@@ -320,16 +408,19 @@ class Orchestrator:
         """Para captura e encerra todos os plugins."""
         self._running = False
 
-        all_tasks: list[asyncio.Task] = list(self._tasks)
+        all_tasks: list[asyncio.Task] = list(self._camera_tasks.values())
         if self._batch_task:
             all_tasks.append(self._batch_task)
+        if self._discovery_task:
+            all_tasks.append(self._discovery_task)
 
         for task in all_tasks:
             task.cancel()
         await asyncio.gather(*all_tasks, return_exceptions=True)
 
-        self._tasks.clear()
+        self._camera_tasks.clear()
         self._batch_task = None
+        self._discovery_task = None
 
         for plugin in self._plugins:
             await plugin.shutdown()
@@ -553,9 +644,7 @@ class Orchestrator:
                                     plugin_detections, frame, metadata, current_zones
                                 )
                                 if results and not frame_snap_saved:
-                                    frame_snap = await self._save_snapshot(
-                                        frame, tenant_id, camera_id
-                                    )
+                                    frame_snap = await self._save_snapshot(frame, tenant_id, camera_id)
                                     frame_snap_saved = True
                                 for result in results:
                                     await self._send_result(result, snapshot_path=frame_snap)
@@ -576,9 +665,7 @@ class Orchestrator:
                             try:
                                 results = await plugin.process_frame(frame, metadata, current_zones)
                                 if results and not standalone_snap_saved:
-                                    standalone_snap = await self._save_snapshot(
-                                        frame, tenant_id, camera_id
-                                    )
+                                    standalone_snap = await self._save_snapshot(frame, tenant_id, camera_id)
                                     standalone_snap_saved = True
                                 for result in results:
                                     await self._send_result(result, snapshot_path=standalone_snap)
@@ -604,7 +691,26 @@ class Orchestrator:
         tenant_id: str,
         camera_id: str,
     ) -> str | None:
-        """Salva frame como JPEG. Retorna caminho relativo a /snapshots/ ou None."""
+        """Salva frame como JPEG na resolução original da câmera.
+
+        `frame` aqui é sempre o frame cheio vindo de source.read() — o
+        downscale pra 640px (SharedInferenceEngine._downscale_if_needed) só
+        existe DENTRO da inferência YOLO e nunca troca essa variável; as
+        bboxes retornadas já vêm normalizadas (0.0-1.0), então escalam
+        corretamente pra qualquer resolução (achado: investigação confirmou
+        que o snapshot salvo já é full-res — 1920x1080 verificado direto no
+        arquivo — a baixa qualidade percebida era falta de bounding box e
+        compressão JPEG mais agressiva que o necessário, não downscale).
+
+        O bbox do evento (normalizado [x1,y1,x2,y2], 0.0-1.0) vai salvo à
+        parte no payload do evento — o retângulo vermelho é desenhado como
+        overlay no frontend (ver `AnalyticsEventsPage.tsx`), nunca gravado
+        nos pixels do arquivo. Gravar a box no JPEG contaminava tanto a
+        evidência bruta quanto o recorte usado pela IA no "Analisar Evento":
+        a linha vermelha cruzando o sujeito atrapalhava a detecção de rosto
+        do GFPGAN (derrubando pro fallback EDSR) e o upscale reproduzia as
+        bordas da box como se fossem parte da cena real.
+        """
         import os
         import uuid
         import cv2
@@ -616,7 +722,10 @@ class Orchestrator:
             os.makedirs(snap_dir, exist_ok=True)
             filename = f"{uuid.uuid4()}.jpg"
             full_path = f"{snap_dir}/{filename}"
-            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
+            # Qualidade 95 (era 80) — o arquivo já é full-res, não faz
+            # sentido perder detalhe extra na compressão por cima disso.
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
             if not ok:
                 return None
             with open(full_path, "wb") as fh:

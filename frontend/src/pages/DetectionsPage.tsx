@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ScanLine, Search, Filter, RefreshCw, X, Film,
@@ -7,6 +7,7 @@ import {
 import { clsx } from 'clsx'
 import { eventsService } from '@/services/events'
 import { camerasService } from '@/services/cameras'
+import { useSSE } from '@/hooks/useSSE'
 import { getEventTypeLabel, getEventTypeColor } from '@/constants/eventTypes'
 import { AuthImage } from '@/components/ui/AuthImage'
 import type { VmsEvent, Camera } from '@/types'
@@ -82,6 +83,17 @@ export function DetectionsPage() {
 
   useEffect(() => { setPage(1) }, [plate, cameraId, dateFrom, dateTo, confMin])
   useEffect(() => { load() }, [load])
+
+  // Real-time: recarrega quando qualquer evento novo chega por SSE.
+  const { lastEvent } = useSSE()
+  const lastSeenRef = useRef<unknown>(null)
+  useEffect(() => {
+    if (!lastEvent || lastEvent === lastSeenRef.current) return
+    lastSeenRef.current = lastEvent
+    const inner = (lastEvent as { data?: { event_type?: string } }).data
+    if (!inner?.event_type) return
+    load()
+  }, [lastEvent, load])
 
   const displayed = confMin
     ? events.filter(e => e.confidence != null && e.confidence >= Number(confMin) / 100)

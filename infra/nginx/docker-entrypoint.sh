@@ -6,12 +6,11 @@ MAX_RETRIES=30
 RETRY_COUNT=0
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://api:8000/api/v1/health 2>/dev/null || echo "000")
-    if [ "$HTTP_STATUS" = "200" ]; then
+    if wget -q --spider http://api:8000/api/v1/health 2>/dev/null; then
         echo "[nginx] API está saudável — iniciando Nginx"
         break
     fi
-    echo "[nginx] API respondeu $HTTP_STATUS — aguardando ($((RETRY_COUNT + 1))/$MAX_RETRIES)"
+    echo "[nginx] API ainda não respondeu 200 — aguardando ($((RETRY_COUNT + 1))/$MAX_RETRIES)"
     RETRY_COUNT=$((RETRY_COUNT + 1))
     sleep 3
 done

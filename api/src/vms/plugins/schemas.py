@@ -10,11 +10,13 @@ class PluginCameraResponse(BaseModel):
     """Câmera retornada ao plugin."""
 
     id: str
+    tenant_id: str
     name: str
     manufacturer: str
     stream_protocol: str
     is_online: bool
     mediamtx_path: str
+    rtsp_url: str | None = None
     location: str | None = None
 
     model_config = {"from_attributes": True}

@@ -240,3 +240,9 @@ class ApiKeyService:
         revoked = await self._api_keys.revoke(api_key_id, tenant_id)
         if not revoked:
             raise NotFoundError("ApiKey", api_key_id)
+
+    async def revoke_api_keys_for_owner(
+        self, owner_type: ApiKeyOwnerType, owner_id: str, tenant_id: str
+    ) -> None:
+        """Revoga todas as API keys de um owner (ex: agent removido)."""
+        await self._api_keys.revoke_by_owner(owner_type.value, owner_id, tenant_id)

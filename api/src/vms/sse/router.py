@@ -15,7 +15,7 @@ from vms.infrastructure.security import decode_token
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_SSE_MAX_CONNECTIONS = 30
+_SSE_MAX_CONNECTIONS = 20
 _sse_active = 0
 
 
@@ -65,14 +65,27 @@ async def sse_stream(
     tenant_id = claims["tenant_id"]
 
     async def event_generator():
-        """Gera eventos SSE via Redis pub/sub."""
+        """Gera eventos SSE via Redis pub/sub.
+
+        Usa app.state.sse_redis (pool dedicado) — pubsub prende a conexão
+        pela vida inteira da stream, então nunca pode disputar o mesmo pool
+        usado por login/refresh/publish de eventos. Achado: antes disso,
+        reconexões de SSE (ex.: nginx flutuando) esgotavam o pool geral e
+        derrubavam /auth/refresh e /auth/login junto.
+        """
         global _sse_active
-        _sse_active += 1
-        redis = request.app.state.redis
+        redis = request.app.state.sse_redis
         channel_name = f"sse:{tenant_id}"
 
         pubsub = redis.pubsub()
-        await pubsub.subscribe(channel_name)
+        try:
+            await pubsub.subscribe(channel_name)
+        except Exception:
+            logger.exception("SSE: falha ao inscrever no canal %s", channel_name)
+            await pubsub.aclose()
+            return
+
+        _sse_active += 1
         logger.info("SSE conectado: tenant=%s (ativas=%d)", tenant_id, _sse_active)
 
         try:
@@ -91,7 +104,6 @@ async def sse_stream(
                 else:
                     # Heartbeat para manter conexão viva
                     yield ": heartbeat\n\n"
-                    await asyncio.sleep(15)
         except asyncio.CancelledError:
             pass
         finally:

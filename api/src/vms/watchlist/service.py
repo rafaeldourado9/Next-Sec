@@ -1,8 +1,10 @@
 """Application service da watchlist facial — cadastro com gate de LGPD."""
 from __future__ import annotations
 
+import logging
 import uuid
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +14,8 @@ from vms.infrastructure.object_storage import ObjectStorage
 from vms.shared.exceptions import NotFoundError, UnauthorizedError
 from vms.watchlist.domain import FaceProfile
 from vms.watchlist.repository import FaceProfileRepository, FaceProfileRepositoryPort
+
+logger = logging.getLogger(__name__)
 
 
 class WatchlistService:
@@ -75,6 +79,83 @@ class WatchlistService:
         watchlist_cache.invalidate(tenant_id)
 
         return created
+
+    async def search_faces(
+        self,
+        profile_id: str,
+        tenant_id: str,
+        *,
+        camera_id: str | None = None,
+        since_hours: int = 24 * 30,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Busca o rosto cadastrado entre os snapshots de eventos já existentes.
+
+        Não roda mais reconhecimento facial ao vivo — o usuário cadastra o
+        rosto e dispara essa busca pontual contra eventos que já têm snapshot
+        (ex: cruzamentos de cerca virtual), delegando o matching pro serviço
+        `analytics/` (que tem o InsightFace carregado).
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from vms.events.models import VmsEventModel
+
+        profile = await self._profiles.get_by_id(profile_id, tenant_id)
+        if not profile or not profile.reference_image_path:
+            raise NotFoundError("FaceProfile", profile_id)
+
+        settings = get_settings()
+        reference_image_url = self._storage.get_presigned_url(
+            settings.minio_bucket_analytics, profile.reference_image_path, expires=300
+        )
+
+        since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+        stmt = (
+            select(VmsEventModel)
+            .where(
+                VmsEventModel.tenant_id == tenant_id,
+                VmsEventModel.image_path.is_not(None),
+                VmsEventModel.occurred_at >= since,
+            )
+            .order_by(VmsEventModel.occurred_at.desc())
+            .limit(limit)
+        )
+        if camera_id:
+            stmt = stmt.where(VmsEventModel.camera_id == camera_id)
+
+        result = await self._session.execute(stmt)
+        events = {str(e.id): e for e in result.scalars().all()}
+        if not events:
+            return []
+
+        candidates = [{"event_id": eid, "image_path": e.image_path} for eid, e in events.items()]
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(
+                    f"{settings.analytics_internal_url}/face-search",
+                    json={
+                        "reference_image_url": reference_image_url,
+                        "candidates": candidates,
+                        "threshold": 0.5,
+                    },
+                )
+                resp.raise_for_status()
+                matches = resp.json()["matches"]
+        except httpx.HTTPError:
+            logger.exception("Falha ao buscar rosto no serviço de analytics")
+            return []
+
+        return [
+            {
+                "event_id": m["event_id"],
+                "similarity": m["similarity"],
+                "camera_id": events[m["event_id"]].camera_id,
+                "occurred_at": events[m["event_id"]].occurred_at,
+            }
+            for m in matches
+            if m["event_id"] in events
+        ]
 
     async def delete_profile(self, profile_id: str, tenant_id: str) -> None:
         """Remove um rosto da watchlist (soft delete + apaga a imagem do storage)."""

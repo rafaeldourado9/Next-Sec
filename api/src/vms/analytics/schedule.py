@@ -7,8 +7,17 @@ a lógica, se deve processar detecção para uma ROI no momento atual.
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from vms.analytics.models import ROISchedule
+
+# NOTA (Next Sec): containers rodam em UTC, mas o horário cadastrado pelo
+# usuário (input type="time" no ROIEditorPanel) é horário local do Brasil,
+# sem nenhuma conversão. Comparar contra `datetime.now()` (UTC) deixava
+# qualquer agendamento noturno armado ~3h fora do horário real (achado
+# durante teste local — "eventos noturnos não funcionam"). Produto é
+# Brasil-only (CNPJ, WhatsApp) — timezone fixo em vez de configurável por tenant.
+_LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
 
 
 def _time_in_window(now_time, start, end) -> bool:  # noqa: ANN001
@@ -30,7 +39,7 @@ def is_armed_now(schedules: list[ROISchedule], now: datetime | None = None) -> b
     if not schedules:
         return True
 
-    current = now or datetime.now()
+    current = (now or datetime.now(_LOCAL_TZ)).astimezone(_LOCAL_TZ)
     current_time = current.time()
     current_dow = current.weekday()  # Monday=0 ... Sunday=6 (mesma convenção usada na API)
 

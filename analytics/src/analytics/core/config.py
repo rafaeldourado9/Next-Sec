@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     traffic_model_path: str = Field(default="/models/traffic.pt")
     object_model_path: str = Field(default="/models/object.pt")
 
+    # Super-resolução (melhoria de frame sob demanda — "Analisar Evento").
+    # FSRCNN mantido como fallback de emergência; o caminho normal agora é
+    # GFPGAN (rosto) / EDSR (sem rosto) — ver core/frame_enhance.py.
+    superres_model_path: str = Field(default="/models/FSRCNN_x4.pb")
+    superres_scale: int = Field(default=4)
+    edsr_model_path: str = Field(default="/models/EDSR_x4.pb")
+    gfpgan_model_path: str = Field(default="/models/GFPGANv1.4.pth")
+
     # ─── Observabilidade ───────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
 

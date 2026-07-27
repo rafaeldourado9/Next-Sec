@@ -223,6 +223,13 @@ class CreateAgentRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
 
 
+class UpdateAgentRequest(BaseModel):
+    """Payload para atualização parcial de agent."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    is_active: bool | None = None
+
+
 class AgentResponse(BaseModel):
     """Resposta com dados de um agent."""
 
@@ -235,6 +242,7 @@ class AgentResponse(BaseModel):
     version: str | None
     streams_running: int
     streams_failed: int
+    is_active: bool
     created_at: datetime
 
 

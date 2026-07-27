@@ -30,7 +30,7 @@ from arq.connections import RedisSettings
 from vms.infrastructure.config import get_settings
 from vms.cameras.tasks import task_camera_watchdog
 from vms.event_clips.tasks import task_cleanup_old_clips
-from vms.notifications.tasks import task_dispatch_notification
+from vms.notifications.tasks import task_dispatch_event_notifications, task_dispatch_notification
 from vms.reports.tasks import task_auto_monthly_report, task_generate_report
 from vms.audit.tasks import task_ensure_audit_partitions
 
@@ -47,6 +47,26 @@ async def startup(ctx: dict) -> None:
     from arq import create_pool
     from arq.connections import RedisSettings as ArqRedisSettings
     from vms.infrastructure.database import create_engine, init_db
+
+    # Registra todos os models no metadata do SQLAlchemy antes de qualquer
+    # query — o processo do worker só importa (transitivamente) os módulos
+    # que as tasks registradas em `functions` precisam, então tabelas como
+    # `tenants` nunca ficavam conhecidas e qualquer FK que apontasse pra elas
+    # quebrava com NoReferencedTableError (achado: task_dispatch_event_
+    # notifications falhava ao salvar notification_logs porque o mapper não
+    # conseguia resolver a FK notification_logs.tenant_id -> tenants.id).
+    # Mesma lista mantida em migrations/env.py, mais os models que essa task
+    # usa e não estavam lá (contacts, event_clips).
+    from vms.iam.models import TenantModel, UserModel, ApiKeyModel  # noqa: F401
+    from vms.cameras.models import CameraModel, AgentModel  # noqa: F401
+    from vms.events.models import VmsEventModel  # noqa: F401
+    from vms.analytics.models import AnalyticsROI, PluginInstallation, AnalyticsEvent  # noqa: F401
+    from vms.notifications.models import NotificationRuleModel, NotificationLogModel  # noqa: F401
+    from vms.lgpd.models import RetentionPolicyModel, ConsentRecordModel  # noqa: F401
+    from vms.audit.models import AuditLogModel  # noqa: F401
+    from vms.billing.models import LicenseKeyModel  # noqa: F401
+    from vms.contacts.models import ContactModel  # noqa: F401
+    from vms.event_clips.models import EventClipModel  # noqa: F401
 
     settings = get_settings()
 
@@ -108,15 +128,16 @@ class WorkerSettings:
     Usa a fila padrão do ARQ ("arq:queue") para não exigir _queue_name
     nos enqueue_job existentes.
 
-    NOTA (Sprint 4): o fluxo evento→clipe→storage→notificação roda hoje
-    síncrono dentro de `POST /plugins/events` (ver plugins/router.py) —
-    volume esperado é baixo (piloto de poucas dezenas de câmeras), então não
-    foi enfileirado via ARQ para o MVP. `task_cleanup_old_clips` é a única
-    parte desse fluxo que roda aqui (job periódico de retenção).
+    NOTA: o fluxo evento→clipe→storage→notificação (ver plugins/router.py)
+    é enfileirado aqui via `task_dispatch_event_notifications` — rodava
+    síncrono dentro de POST /plugins/events antes, e uma regra de
+    notificação lenta/quebrada (retries de WhatsApp) atrasava o evento
+    aparecer em tempo real pro usuário mesmo o registro já estando pronto.
     """
 
     functions = [
         task_dispatch_notification,
+        task_dispatch_event_notifications,
         task_camera_watchdog,
         task_ensure_audit_partitions,
         task_cleanup_old_clips,

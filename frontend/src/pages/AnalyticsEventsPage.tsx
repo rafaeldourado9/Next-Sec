@@ -5,9 +5,11 @@ import {
   ChevronLeft, ChevronRight, ZoomIn, ImageOff,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
+import axios from 'axios'
 import { clsx } from 'clsx'
 import { analyticsService, type AnalyticsEvent } from '@/services/analytics'
 import { camerasService } from '@/services/cameras'
+import { useSSE } from '@/hooks/useSSE'
 import { PLUGIN_NAMES, SEV_STYLE } from '@/constants/plugins'
 import { getEventTypeLabel, getEventTypeColor } from '@/constants/eventTypes'
 import { AuthImage } from '@/components/ui/AuthImage'
@@ -30,6 +32,23 @@ function fmtTime(iso: string) {
   })
 }
 
+function BBoxOverlay({ payload }: { payload: Record<string, unknown> }) {
+  const bbox = payload?.bbox
+  if (!Array.isArray(bbox) || bbox.length !== 4) return null
+  const [x1, y1, x2, y2] = bbox as number[]
+  return (
+    <div
+      className="absolute border-2 border-red-500 rounded-sm pointer-events-none"
+      style={{
+        left: `${x1 * 100}%`,
+        top: `${y1 * 100}%`,
+        width: `${(x2 - x1) * 100}%`,
+        height: `${(y2 - y1) * 100}%`,
+      }}
+    />
+  )
+}
+
 function ConfBar({ value }: { value: number | null }) {
   if (value == null) return <span className="text-t3 text-xs">—</span>
   const pct = Math.round(value * 100)
@@ -49,9 +68,10 @@ export function AnalyticsEventsPage() {
   const [events, setEvents]   = useState<AnalyticsEvent[]>([])
   const [cameras, setCameras] = useState<Camera[]>([])
   const [loading, setLoading] = useState(true)
-  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [lightboxEvent, setLightboxEvent] = useState<AnalyticsEvent | null>(null)
+  const [enhancedSrc, setEnhancedSrc] = useState<string | null>(null)
+  const [enhancing, setEnhancing] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
-  const [sseConnected, setSseConnected] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
   const [page, setPage] = useState(1)
 
@@ -63,7 +83,6 @@ export function AnalyticsEventsPage() {
   const [dateTo, setDateTo]     = useState('')
   const [confMin, setConfMin]   = useState('')
 
-  const evtSourceRef = useRef<EventSource | null>(null)
   const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
@@ -93,44 +112,27 @@ export function AnalyticsEventsPage() {
   useEffect(() => { setPage(1) }, [severity, pluginId, cameraId, dateFrom, dateTo, confMin])
   useEffect(() => { load() }, [load])
 
-  // SSE — real-time analytics events
+  // SSE — real-time analytics events.
+  // NOTA (Next Sec): a versão anterior montava a linha da tabela na mão a
+  // partir da mensagem SSE, mas essa mensagem só carrega um resumo
+  // ({event: "analytics.event", data: {event_type, camera_id, severity,
+  // confidence, occurred_at}}) — sem snapshot, sem roi_name, sem bbox. O
+  // código também lia os campos no nível errado (`d.camera_id` em vez de
+  // `d.data.camera_id`), então vinham sempre vazios, e usava `d.event` como
+  // se fosse o tipo real do evento (sempre "analytics.event", nunca
+  // "analytics.intrusion.crossed") — plugin_id sempre saía "event". Mais
+  // simples e correto: SSE só avisa "algo mudou", e a lista recarrega da API
+  // de verdade (que já tem o formato certo).
+  const { lastEvent, connected: sseConnected } = useSSE()
+  const lastSeenSeqRef = useRef<unknown>(null)
+
   useEffect(() => {
-    if (!autoRefresh) {
-      setSseConnected(false)
-      if (evtSourceRef.current) { evtSourceRef.current.close(); evtSourceRef.current = null }
-      return
-    }
-    try {
-      const token = localStorage.getItem('vms_access_token')
-      const evtSource = new EventSource(`/api/v1/sse?token=${encodeURIComponent(token || '')}`)
-      evtSource.onopen = () => setSseConnected(true)
-      evtSource.onmessage = e => {
-        try {
-          const d = JSON.parse(e.data)
-          const evType: string = d.event_type || d.event || ''
-          if (!evType.startsWith('analytics.')) return
-          setEvents(prev => [{
-            id:          crypto.randomUUID(),
-            plugin_id:   evType.split('.')[1] || 'unknown',
-            camera_id:   d.camera_id   || '',
-            camera_name: d.camera_name || '',
-            event_type:  evType,
-            severity:    d.severity    || 'info',
-            confidence:  d.confidence  ?? null,
-            payload:     d.payload     || d.data || {},
-            occurred_at: d.occurred_at || new Date().toISOString(),
-            created_at:  new Date().toISOString(),
-            snapshot_url: null,
-          }, ...prev].slice(0, 500))
-        } catch { /* ignore parse errors */ }
-      }
-      evtSource.onerror = () => { setSseConnected(false); evtSource.close() }
-      evtSourceRef.current = evtSource
-      return () => { evtSource.close(); evtSourceRef.current = null; setSseConnected(false) }
-    } catch {
-      setSseConnected(false)
-    }
-  }, [autoRefresh])
+    if (!autoRefresh || !lastEvent || lastEvent === lastSeenSeqRef.current) return
+    lastSeenSeqRef.current = lastEvent
+    const inner = (lastEvent as { data?: { event_type?: string } }).data
+    if (!inner?.event_type?.startsWith('analytics.')) return
+    load()
+  }, [lastEvent, autoRefresh, load])
 
   // Polling fallback if SSE unavailable
   useEffect(() => {
@@ -155,26 +157,78 @@ export function AnalyticsEventsPage() {
   const pgEnd   = Math.min(totalPages, Math.max(page + 2, 5))
   const pgNums  = Array.from({ length: Math.max(0, pgEnd - pgStart + 1) }, (_, i) => pgStart + i)
 
+  const openLightbox = (ev: AnalyticsEvent) => {
+    setLightboxEvent(ev)
+    setEnhancedSrc(null)
+  }
+
+  const closeLightbox = () => {
+    if (enhancedSrc) URL.revokeObjectURL(enhancedSrc)
+    setLightboxEvent(null)
+    setEnhancedSrc(null)
+  }
+
+  const handleAnalyze = async () => {
+    if (!lightboxEvent) return
+    setEnhancing(true)
+    try {
+      const url = await analyticsService.enhanceEvent(lightboxEvent.id)
+      setEnhancedSrc(url)
+    } catch (err) {
+      const isTimeout = axios.isAxiosError(err) && (err.code === 'ECONNABORTED' || err.response?.status === 504)
+      toast.error(isTimeout ? 'Análise demorou demais e foi cancelada' : 'Erro ao melhorar o frame')
+    } finally {
+      setEnhancing(false)
+    }
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Lightbox */}
-      {lightboxSrc && (
+      {lightboxEvent && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/92 backdrop-blur-sm cursor-zoom-out"
-          onClick={() => setLightboxSrc(null)}
+          onClick={closeLightbox}
         >
           <button
             className="absolute top-5 right-5 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition"
-            onClick={e => { e.stopPropagation(); setLightboxSrc(null) }}
+            onClick={e => { e.stopPropagation(); closeLightbox() }}
           >
             <X size={18} />
           </button>
-          <div onClick={e => e.stopPropagation()} className="cursor-default">
-            <AuthImage
-              src={lightboxSrc}
-              alt="Snapshot"
-              className="max-w-5xl max-h-[88vh] rounded-xl object-contain shadow-2xl"
-            />
+          <div onClick={e => e.stopPropagation()} className="cursor-default flex flex-col items-center gap-3">
+            <div className="relative max-w-5xl max-h-[80vh]">
+              {enhancedSrc ? (
+                <img
+                  src={enhancedSrc}
+                  alt="Snapshot melhorado"
+                  className="max-w-5xl max-h-[80vh] rounded-xl object-contain shadow-2xl"
+                />
+              ) : (
+                <AuthImage
+                  src={lightboxEvent.snapshot_url!}
+                  alt="Snapshot"
+                  className={clsx(
+                    'max-w-5xl max-h-[80vh] rounded-xl object-contain shadow-2xl transition block',
+                    enhancing && 'opacity-30 blur-sm',
+                  )}
+                />
+              )}
+              {!enhancedSrc && !enhancing && <BBoxOverlay payload={lightboxEvent.payload} />}
+              {enhancing && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-black/30">
+                  <div className="w-10 h-10 rounded-full border-2 border-white/20 border-t-white animate-spin" />
+                  <span className="text-xs text-white/80">Restaurando detalhe do frame (pode levar até 1 min)...</span>
+                </div>
+              )}
+            </div>
+            <button
+              className="btn btn-primary gap-2"
+              onClick={handleAnalyze}
+              disabled={enhancing || !!enhancedSrc}
+            >
+              {enhancing ? 'Analisando...' : enhancedSrc ? 'Frame melhorado' : 'Analisar Evento'}
+            </button>
           </div>
         </div>
       )}
@@ -435,7 +489,7 @@ export function AnalyticsEventsPage() {
                           background: 'var(--elevated)',
                           cursor: ev.snapshot_url ? 'zoom-in' : 'default',
                         }}
-                        onClick={() => ev.snapshot_url && setLightboxSrc(ev.snapshot_url)}
+                        onClick={() => ev.snapshot_url && openLightbox(ev)}
                       >
                         {ev.snapshot_url ? (
                           <>

@@ -97,6 +97,7 @@ class PluginService:
             tenant_id=tenant_id,
             camera_id=camera_id,
             event_type=event_type,
+            confidence=confidence,
             payload=enriched_payload,
             image_path=image_path,
             occurred_at=timestamp,

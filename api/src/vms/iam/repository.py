@@ -38,6 +38,7 @@ class ApiKeyRepositoryPort(Protocol):
     async def get_by_prefix(self, prefix: str) -> ApiKey | None: ...
     async def create(self, api_key: ApiKey) -> ApiKey: ...
     async def revoke(self, api_key_id: str, tenant_id: str) -> bool: ...
+    async def revoke_by_owner(self, owner_type: str, owner_id: str, tenant_id: str) -> None: ...
     async def update_last_used(self, api_key_id: str) -> None: ...
 
 
@@ -226,6 +227,19 @@ class ApiKeyRepository:
         )
         result = await self._session.execute(stmt)
         return result.rowcount > 0
+
+    async def revoke_by_owner(self, owner_type: str, owner_id: str, tenant_id: str) -> None:
+        """Revoga todas as API keys de um owner (ex: agent removido)."""
+        stmt = (
+            update(ApiKeyModel)
+            .where(
+                ApiKeyModel.owner_type == owner_type,
+                ApiKeyModel.owner_id == owner_id,
+                ApiKeyModel.tenant_id == tenant_id,
+            )
+            .values(is_active=False)
+        )
+        await self._session.execute(stmt)
 
     async def update_last_used(self, api_key_id: str) -> None:
         """Atualiza timestamp de último uso (fire-and-forget)."""

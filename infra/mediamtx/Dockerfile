@@ -1,7 +1,9 @@
 FROM bluenviron/mediamtx:latest-ffmpeg
 
-# curl é necessário para os hooks runOnReady / runOnNotReady / runOnRecordSegmentComplete
-RUN apk add --no-cache curl
+# NOTA (Next Sec): hooks (runOnReady/runOnNotReady) usam wget, não curl —
+# wget já vem na imagem base (Alpine/BusyBox), evita depender do apk add
+# (achado durante teste local: dl-cdn.alpinelinux.org falhava por erro de
+# certificado TLS neste ambiente). Ver .genesis/architecture/reuse-plan.md.
 
 # Copia configuração customizada
 COPY mediamtx.yml /mediamtx.yml

@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, File, Form, UploadFile, status
 
 from vms.shared.api.dependencies import CurrentUser, DbSession
-from vms.watchlist.schemas import FaceProfileResponse
+from vms.watchlist.schemas import FaceProfileResponse, FaceSearchMatchResponse
 from vms.watchlist.service import WatchlistService, build_watchlist_service
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,35 @@ async def create_face(
         content_type=image.content_type or "image/jpeg",
     )
     return FaceProfileResponse.model_validate(profile)
+
+
+@router.post(
+    "/faces/{profile_id}/search",
+    response_model=list[FaceSearchMatchResponse],
+    summary="Buscar rosto cadastrado entre eventos já existentes",
+)
+async def search_face(
+    profile_id: str,
+    claims: CurrentUser,
+    db: DbSession,
+    camera_id: str | None = None,
+) -> list[FaceSearchMatchResponse]:
+    """Busca sob demanda: compara o rosto cadastrado contra snapshots de eventos já capturados.
+
+    Reconhecimento facial não roda mais ao vivo — o rosto é cadastrado uma vez
+    e essa busca é disparada manualmente contra o histórico de eventos.
+    """
+    matches = await _svc(db).search_faces(profile_id, claims.tenant_id, camera_id=camera_id)
+    return [
+        FaceSearchMatchResponse(
+            event_id=m["event_id"],
+            camera_id=m["camera_id"] or "",
+            similarity=m["similarity"],
+            occurred_at=m["occurred_at"],
+            snapshot_url=f"/api/v1/analytics/events/{m['event_id']}/snapshot",
+        )
+        for m in matches
+    ]
 
 
 @router.delete(

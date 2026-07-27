@@ -104,7 +104,9 @@ async def dispatch_channel(
     *,
     phone_number: str,
     message: str,
-    media_url: str | None = None,
+    media_bytes: bytes | None = None,
+    media_type: str = "image",
+    mime_type: str = "image/jpeg",
     client: httpx.AsyncClient | None = None,
 ) -> NotificationLog:
     """Envia notificação a um contato via ChannelAdapter (ex: WhatsApp/Arcanum).
@@ -115,7 +117,11 @@ async def dispatch_channel(
     """
     adapter = build_channel_adapter(rule.channel, client=client)
     success, status_code, response_body = await adapter.send(
-        destination=phone_number, message=message, media_url=media_url
+        destination=phone_number,
+        message=message,
+        media_bytes=media_bytes,
+        media_type=media_type,
+        mime_type=mime_type,
     )
     return NotificationLog(
         id=str(uuid.uuid4()),

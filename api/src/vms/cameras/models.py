@@ -40,6 +40,7 @@ class AgentModel(Base):
     version: Mapped[str | None] = mapped_column(String(50), nullable=True)
     streams_running: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     streams_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     cameras: Mapped[list["CameraModel"]] = relationship("CameraModel", back_populates="agent")

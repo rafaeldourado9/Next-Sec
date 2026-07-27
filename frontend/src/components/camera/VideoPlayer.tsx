@@ -28,6 +28,8 @@ export function VideoPlayer({
   const containerRef  = useRef<HTMLDivElement>(null)
   const isMountedRef  = useRef(false)
   const playAbortRef  = useRef<AbortController | null>(null)
+  const retryCountRef = useRef(0)
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [playing, setPlaying]         = useState(false)
   const [muted, setMuted]             = useState(initialMuted)
@@ -99,6 +101,11 @@ export function VideoPlayer({
 
     setLoading(true)
     setError(false)
+    retryCountRef.current = 0
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
 
     // Cleanup do HLS anterior
     if (hlsRef.current) {
@@ -121,6 +128,10 @@ export function VideoPlayer({
       hlsRef.current = hls
       hls.loadSource(src)
       hls.attachMedia(video)
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        // Fragmento carregou de verdade — stream se recuperou, zera contador.
+        retryCountRef.current = 0
+      })
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (autoPlay && isMountedRef.current) {
           safePlay(video)
@@ -129,11 +140,32 @@ export function VideoPlayer({
           setLoading(false)
         }
       })
+      const MAX_RETRIES = 5
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal && isMountedRef.current) { 
-          setError(true)
-          onError?.() 
+        if (!data.fatal || !isMountedRef.current) return
+
+        // NOTA (Next Sec): a câmera real reconecta com frequência (RTSP
+        // instável); cada vez que isso acontece o MediaMTX recria o muxer de
+        // HLS e o cookie de sessão anterior fica velho. Sem retry, o player
+        // ficava travado em "Sem sinal" pra sempre até um F5 manual (achado
+        // durante teste local). `startLoad()` refaz o carregamento a partir
+        // do manifest — reabre o handshake de cookie do zero.
+        if (retryCountRef.current < MAX_RETRIES) {
+          retryCountRef.current += 1
+          const delay = Math.min(1000 * 2 ** (retryCountRef.current - 1), 15000)
+          retryTimerRef.current = setTimeout(() => {
+            if (!isMountedRef.current || !hlsRef.current) return
+            if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              hlsRef.current.recoverMediaError()
+            } else {
+              hlsRef.current.startLoad()
+            }
+          }, delay)
+          return
         }
+
+        setError(true)
+        onError?.()
       })
     } else if (video.canPlayType('application/vnd.apple.mpegurl') || !src.includes('.m3u8')) {
       video.src = src
@@ -147,6 +179,10 @@ export function VideoPlayer({
     }
 
     return () => {
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = null
+      }
       // Destruir HLS
       if (hlsRef.current) {
         hlsRef.current.destroy()

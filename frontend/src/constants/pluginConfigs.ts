@@ -13,7 +13,6 @@ export interface FieldDef {
 export const PLUGIN_CONFIG_SCHEMA: Record<string, FieldDef[]> = {
   intrusion: [
     { key: 'min_confidence', label: 'Confiança mínima', type: 'number', min: 0.1, max: 1, step: 0.05, default: 0.5 },
-    { key: 'cooldown_seconds', label: 'Cooldown (s)', type: 'number', min: 0, max: 3600, step: 1, default: 30 },
   ],
   people_count: [
     { key: 'min_confidence', label: 'Confiança mínima', type: 'number', min: 0.1, max: 1, step: 0.05, default: 0.5 },

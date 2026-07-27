@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Bell, AlertTriangle, Info, TrendingUp, Camera, Brain,
@@ -12,6 +12,7 @@ import {
   PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts'
 import { analyticsService, type AnalyticsStats, type AnalyticsEvent } from '@/services/analytics'
+import { useSSE } from '@/hooks/useSSE'
 import { PageSpinner } from '@/components/ui/Spinner'
 import { Badge } from '@/components/ui/Badge'
 
@@ -124,6 +125,17 @@ export function AnalyticsDashboardPage() {
   }, [])
 
   useEffect(() => { loadData(selectedPeriod) }, [selectedPeriod, loadData])
+
+  // Real-time: recarrega o dashboard quando um evento analítico novo chega.
+  const { lastEvent } = useSSE()
+  const lastSeenRef = useRef<unknown>(null)
+  useEffect(() => {
+    if (!lastEvent || lastEvent === lastSeenRef.current) return
+    lastSeenRef.current = lastEvent
+    const inner = (lastEvent as { data?: { event_type?: string } }).data
+    if (!inner?.event_type?.startsWith('analytics.')) return
+    loadData(selectedPeriod)
+  }, [lastEvent, selectedPeriod, loadData])
 
   // Hourly area chart data
   const hourlyData = useMemo(() => {

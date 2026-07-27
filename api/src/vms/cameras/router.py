@@ -29,6 +29,7 @@ from vms.cameras.schemas import (
     CameraResponse,
     CreateAgentRequest,
     CreateAgentResponse,
+    UpdateAgentRequest,
     CreateCameraRequest,
     DiscoverOnvifRequest,
     DiscoverOnvifResponse,
@@ -512,6 +513,26 @@ async def get_agent(
     """Retorna agent pelo ID."""
     svc = _agent_svc(db)
     agent = await svc.get_agent(agent_id, claims.tenant_id)
+    return AgentResponse.model_validate(agent)
+
+
+@router.put(
+    "/agents/{agent_id}",
+    response_model=AgentResponse,
+    summary="Atualizar agent",
+    tags=["agents"],
+)
+async def update_agent(
+    agent_id: str,
+    body: UpdateAgentRequest,
+    claims: CurrentUser,
+    db: DbSession,
+) -> AgentResponse:
+    """Atualiza nome e/ou status ativo do agent."""
+    svc = _agent_svc(db)
+    agent = await svc.update_agent(
+        agent_id, claims.tenant_id, name=body.name, is_active=body.is_active
+    )
     return AgentResponse.model_validate(agent)
 
 

@@ -43,6 +43,25 @@ services:
       retries: 10
     networks: [next_sec]
 
+  # ─── Arcanum (gateway WhatsApp self-hosted — notificações a contatos, ver ADR-009) ─
+  # Repo irmão em D:\Next\arcanum (fora do next_sec/). Envio apenas — o
+  # ChannelAdapter (notifications/channel_adapter.py) só chama sendText/sendMedia,
+  # não configura webhook de entrada.
+  arcanum:
+    build:
+      context: ../arcanum
+    restart: unless-stopped
+    environment:
+      - GATEWAY_PORT=3100
+    volumes:
+      - arcanum_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [next_sec]
+
   # ─── Streaming (ingestão RTSP para leitura de frames pelo analytics) ──────
   mediamtx:
     build:
@@ -133,6 +152,8 @@ services:
       - NOTIFICATION_CHANNEL=${NOTIFICATION_CHANNEL:-whatsapp}
       - ARCANUM_BASE_URL=${ARCANUM_BASE_URL:-http://arcanum:3100}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - snapshots:/snapshots
     depends_on:
       postgres:
         condition: service_healthy
@@ -179,7 +200,7 @@ services:
       - VMS_API_KEY=${VMS_API_KEY:-dev-analytics-key}
       - MEDIAMTX_HOST=mediamtx
       - REDIS_URL=redis://redis:6379/1
-      - ANALYTICS_FPS=1
+      - ANALYTICS_FPS=3
       - YOLO_IMGSZ=640
       - YOLO_CONF=0.30
       - YOLO_MODEL_PATH=/models/object.pt
@@ -329,6 +350,7 @@ volumes:
   edge_agent_data:
   reports:
   minio_data:
+  arcanum_data:
 
 networks:
   next_sec:

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Settings, Wifi, Edit2, Save, X, ShieldAlert,
@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
 import { Confirm } from '@/components/ui/Confirm'
 import { usePermission } from '@/hooks/usePermission'
+import { useSSE } from '@/hooks/useSSE'
 import { getEventTypeLabel, getEventTypeColor, isIntrusionEvent } from '@/constants/eventTypes'
 import { PLUGIN_NAMES } from '@/constants/plugins'
 import { ROIEditorPanel } from '@/components/roi/ROIEditorPanel'
@@ -336,6 +337,19 @@ export function CameraDetailPage() {
         .finally(() => setRoisLoading(false))
     }
   }, [id, tab, eventsPage])
+
+  // Real-time: recarrega a lista de eventos quando um evento analítico chega
+  // por SSE pra essa mesma câmera (só enquanto a aba de eventos tá aberta).
+  const { lastEvent } = useSSE()
+  const lastSeenRef = useRef<unknown>(null)
+  useEffect(() => {
+    if (!id || tab !== 'events' || !lastEvent || lastEvent === lastSeenRef.current) return
+    lastSeenRef.current = lastEvent
+    const inner = (lastEvent as { data?: { event_type?: string; camera_id?: string } }).data
+    if (!inner?.event_type?.startsWith('analytics.') || inner.camera_id !== id) return
+    eventsService.list({ camera_id: id, page: eventsPage, page_size: 20 })
+      .then((r) => { setEvents(r.items ?? []); setEventsTotal(r.total ?? 0) })
+  }, [lastEvent, id, tab, eventsPage])
 
   const handleSave = async () => {
     if (!id || !camera) return

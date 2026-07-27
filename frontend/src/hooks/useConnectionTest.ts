@@ -28,7 +28,7 @@ export function useConnectionTest() {
     setResult({ status: 'loading' })
     try {
       const data = await camerasSvc.onvifProbe({ onvif_url, username, password }) as OnvifProbeResponse
-      if (data.reachable) {
+      if (data.reachable && data.rtsp_url) {
         setResult({
           status: 'ok',
           manufacturer: data.manufacturer ?? undefined,
@@ -36,6 +36,10 @@ export function useConnectionTest() {
           rtsp_url: data.rtsp_url ?? undefined,
           snapshot_url: data.snapshot_url ?? undefined,
         })
+      } else if (data.reachable) {
+        // Alcançável, mas sem URL RTSP — criar a câmera assim resultaria em stream
+        // morto ("Aguardando primeiro frame" para sempre). Trata como erro aqui.
+        setResult({ status: 'error', error: data.error ?? 'Câmera acessível, mas não foi possível obter a URL RTSP' })
       } else {
         setResult({ status: 'error', error: data.error ?? 'Câmera inacessível' })
       }

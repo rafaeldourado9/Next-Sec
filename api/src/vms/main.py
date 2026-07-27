@@ -129,6 +129,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         retry_on_timeout=True,
     )
     app.state.redis = redis_client
+
+    # Pool Redis dedicado ao SSE — pubsub mantém a conexão presa pela vida
+    # inteira da stream, então SSE nunca pode competir pelo mesmo pool usado
+    # por login/refresh/publish (achado: reconexões de SSE saturavam o pool
+    # de 20 conexões do redis_client principal, o que derrubava até rotas
+    # sem relação nenhuma com SSE, como /auth/refresh e /auth/login).
+    sse_redis_client = aioredis.from_url(
+        settings.redis_url,
+        encoding="utf-8",
+        decode_responses=False,
+        max_connections=25,
+        socket_keepalive=True,
+        retry_on_timeout=True,
+    )
+    app.state.sse_redis = sse_redis_client
     # ARQ pool para enfileiramento de tasks (conexões separadas do app Redis)
     from arq import create_pool
     from arq.connections import RedisSettings as ArqRedisSettings
@@ -161,6 +176,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     await redis_client.aclose()
+    await sse_redis_client.aclose()
     await app.state.arq_redis.aclose()
     await disconnect_event_bus()
     await close_db()
@@ -206,7 +222,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(CorrelationIdMiddleware)
 
-    # Require onboarding — bloqueia tenant sem plano escolhido
+    # Require onboarding — bloqueia tenant sem licença ativada
     from vms.infrastructure.middleware.require_onboarding import RequireOnboardingMiddleware
 
     app.add_middleware(RequireOnboardingMiddleware)
@@ -248,6 +264,8 @@ def _include_routers(app: FastAPI) -> None:
     from vms.lgpd.router import router as lgpd_router
     from vms.contacts.router import router as contacts_router
     from vms.watchlist.router import router as watchlist_router
+    from vms.billing.router import router as billing_router
+    from vms.whatsapp.router import router as whatsapp_router
 
     # Health
     app.include_router(health_router, prefix="/api/v1")
@@ -290,6 +308,12 @@ def _include_routers(app: FastAPI) -> None:
 
     # Watchlist — reconhecimento facial (Next Sec)
     app.include_router(watchlist_router, prefix="/api/v1")
+
+    # Billing — licenciamento mínimo (status/ativação), exigido pelo LicenseGate
+    app.include_router(billing_router, prefix="/api/v1")
+
+    # WhatsApp — proxy de conexão com o Arcanum (QR/status), ver ADR-009
+    app.include_router(whatsapp_router, prefix="/api/v1")
 
     # Admin Panel — franqueado (somente role admin)
     from vms.admin.router import router as admin_router

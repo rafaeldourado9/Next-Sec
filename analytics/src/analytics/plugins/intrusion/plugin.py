@@ -73,9 +73,6 @@ class IntrusionDetectionPlugin(YOLOPlugin):
         # Tracks ativos: {track_id: {"centroid": (x,y), "in_roi": bool, "last_seen": float, "bbox": [...]}}
         self._tracks: dict[int, dict] = {}
         self._next_track_id = 0
-        # Cooldown por track após crossing: {track_id: timestamp}
-        self._cross_cooldowns: dict[int, float] = {}
-        self._cooldown_seconds: float = 5.0
         # TTL para expirar tracks inativos
         self._track_ttl: float = 2.0  # segundos
 
@@ -121,7 +118,6 @@ class IntrusionDetectionPlugin(YOLOPlugin):
         ]
         for tid in expired:
             self._tracks.pop(tid, None)
-            self._cross_cooldowns.pop(tid, None)
 
         # Atualizar tracks com novas detecções
         matched: set[int] = set()
@@ -132,12 +128,20 @@ class IntrusionDetectionPlugin(YOLOPlugin):
             for tid, track in self._tracks.items():
                 if tid in matched:
                     continue
-                # Score = IoU * 0.7 + inverso_distancia * 0.3
+                # NOTA (Next Sec): a 1 fps (ANALYTICS_FPS), uma pessoa andando
+                # normal já se desloca bastante entre duas amostras — bbox
+                # quase nunca sobrepõe (IoU baixo) e o centroide pula longe.
+                # Com peso 0.7 em IoU e tolerância de distância de só ~0.2 de
+                # diagonal, o track "perdia" a pessoa a cada frame e nunca
+                # via a mesma pessoa dentro E fora da zona — cruzamento nunca
+                # disparava mesmo com gente passando (achado durante teste
+                # local). Invertido o peso pra favorecer proximidade — mais
+                # robusto a 1 fps — e dobrada a tolerância de distância.
                 iou = _iou(det["bbox"], track["bbox"])
                 dist = ((cx - track["centroid"][0]) ** 2 + (cy - track["centroid"][1]) ** 2) ** 0.5
-                dist_score = max(0, 1.0 - dist * 5.0)  # normalizado, ~0.2px = limite
-                score = iou * 0.7 + dist_score * 0.3
-                if score > best_score and score > 0.3:
+                dist_score = max(0, 1.0 - dist * 2.5)
+                score = iou * 0.3 + dist_score * 0.7
+                if score > best_score and score > 0.15:
                     best_score = score
                     best_tid = tid
 
@@ -149,6 +153,10 @@ class IntrusionDetectionPlugin(YOLOPlugin):
                     "detection": det,
                 })
                 matched.add(best_tid)
+                logger.info(
+                    "Track %d atualizado: centroid=(%.3f,%.3f) conf=%.2f score=%.2f",
+                    best_tid, cx, cy, det["confidence"], best_score,
+                )
             else:
                 tid = self._next_track_id
                 self._next_track_id += 1
@@ -158,6 +166,17 @@ class IntrusionDetectionPlugin(YOLOPlugin):
                     "last_seen": now,
                     "detection": det,
                 }
+                # LOG TEMPORÁRIO (achado: se o placar de match cair abaixo de
+                # 0.15 entre duas amostras — pessoa andando rápido — um track
+                # NOVO nasce aqui e reseta in_roi_* pra None, apagando a
+                # transição de estado que já tinha acontecido no track antigo.
+                # Esse log deixa visível quando isso acontece: "novo track"
+                # logo depois de um track existente que já estava perto da
+                # borda da ROI é o sintoma.
+                logger.info(
+                    "Track %d CRIADO (nenhum match >0.15): centroid=(%.3f,%.3f) conf=%.2f",
+                    tid, cx, cy, det["confidence"],
+                )
 
         # Verificar transições de estado para cada ROI
         for roi in rois:
@@ -181,16 +200,14 @@ class IntrusionDetectionPlugin(YOLOPlugin):
                     continue
 
                 if prev_in != in_roi:
-                    # Transição! Cruzou a cerca
+                    # Transição! Cruzou a cerca — dispara na hora, sem
+                    # cooldown nenhum (removido a pedido: precisa captar em
+                    # tempo real, sem risco de suprimir um cruzamento de
+                    # verdade só porque aconteceu perto de outro).
                     direction = "enter" if in_roi else "exit"
-
-                    # Verificar cooldown
-                    last_cross = self._cross_cooldowns.get(tid, 0)
-                    if now - last_cross >= self._cooldown_seconds:
-                        self._cross_cooldowns[tid] = now
-                        results.append(self._make_result(
-                            roi, det, metadata, direction, now
-                        ))
+                    results.append(self._make_result(
+                        roi, det, metadata, direction, now
+                    ))
 
         return results
 

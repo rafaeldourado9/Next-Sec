@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import select, update
+from sqlalchemy import delete as sa_delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vms.cameras.domain import (
@@ -49,6 +49,7 @@ class AgentRepositoryPort(Protocol):
     async def list_by_tenant(self, tenant_id: str) -> list[Agent]: ...
     async def create(self, agent: Agent) -> Agent: ...
     async def update(self, agent: Agent) -> Agent: ...
+    async def delete(self, agent_id: str, tenant_id: str) -> bool: ...
 
 
 # ─── Conversores ORM ↔ Domain ─────────────────────────────────────────────────
@@ -108,6 +109,7 @@ def _agent_to_domain(m: AgentModel) -> Agent:
         streams_running=m.streams_running,
         streams_failed=m.streams_failed,
         created_at=m.created_at,
+        is_active=m.is_active,
     )
 
 
@@ -335,6 +337,7 @@ class AgentRepository:
             status=agent.status,
             streams_running=agent.streams_running,
             streams_failed=agent.streams_failed,
+            is_active=agent.is_active,
         )
         self._session.add(model)
         await self._session.flush()
@@ -347,12 +350,22 @@ class AgentRepository:
             update(AgentModel)
             .where(AgentModel.id == agent.id, AgentModel.tenant_id == agent.tenant_id)
             .values(
+                name=agent.name,
                 status=agent.status,
                 last_heartbeat_at=agent.last_heartbeat_at,
                 version=agent.version,
                 streams_running=agent.streams_running,
                 streams_failed=agent.streams_failed,
+                is_active=agent.is_active,
             )
         )
         await self._session.execute(stmt)
         return agent
+
+    async def delete(self, agent_id: str, tenant_id: str) -> bool:
+        """Remove agent definitivamente. Câmeras associadas ficam com agent_id=NULL."""
+        stmt = sa_delete(AgentModel).where(
+            AgentModel.id == agent_id, AgentModel.tenant_id == tenant_id
+        )
+        result = await self._session.execute(stmt)
+        return result.rowcount > 0

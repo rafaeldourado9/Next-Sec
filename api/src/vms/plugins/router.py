@@ -87,11 +87,13 @@ async def list_plugin_cameras(api_key: ApiKeyHeader, db: DbSession) -> list[Plug
     return [
         PluginCameraResponse(
             id=c.id,
+            tenant_id=tenant_id,
             name=c.name,
             manufacturer=c.manufacturer,
             stream_protocol=c.stream_protocol,
             is_online=c.is_online,
             mediamtx_path=c.mediamtx_path,
+            rtsp_url=c.rtsp_url,
             location=c.location,
         )
         for c in cameras
@@ -137,6 +139,7 @@ async def get_stream_token(
     summary="Ingestão de evento detectado pelo plugin",
 )
 async def ingest_plugin_event(
+    request: Request,
     body: PluginEventRequest,
     api_key: ApiKeyHeader,
     db: DbSession,
@@ -191,48 +194,37 @@ async def ingest_plugin_event(
     except Exception:
         logger.debug("Falha ao publicar SSE para evento analytics (não crítico)", exc_info=True)
 
-    # Persiste em analytic_events (tabela unificada — lida por /analytics/events e /search/video)
-    try:
-        from datetime import datetime, timezone, timedelta
-        from vms.analytics.analytic_event_model import AnalyticEvent
-        analytic_event = AnalyticEvent(
-            tenant_id=tenant_id,
-            camera_id=body.camera_id,
-            event_type=body.event_type,
-            attributes=body.payload or {},
-            confidence=body.confidence,
-            thumbnail_key=body.snapshot_path,
-            occurred_at=body.occurred_at or datetime.now(timezone.utc),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
-        )
-        db.add(analytic_event)
-        await db.flush()
-    except Exception:
-        logger.warning("Falha ao criar AnalyticEvent (não crítico)", exc_info=True)
+    # NOTA (Next Sec): removida a escrita em `analytic_events` — a tabela nunca
+    # foi migrada (achado durante teste local: /analytics/events e /stats
+    # sempre 500) e a feature que a consumia (/search/video) já tinha sido
+    # removida (ADR-013). Era só um insert silenciosamente falhando a cada
+    # evento. /analytics/events e /stats agora leem de vms_events, o caminho
+    # real (ver .genesis/architecture/reuse-plan.md).
 
-    # Fluxo evento → clipe → storage → notificação (ADR-009/ADR-010).
-    # Síncrono no request: volume esperado é baixo (piloto de poucas dezenas de
-    # câmeras, eventos esparsos) — evita a complexidade de enfileirar via ARQ
-    # para o MVP. Nunca falha a ingestão do evento por causa disso (best-effort).
+    # Fluxo evento → clipe → storage → notificação (ADR-009/ADR-010) — agora
+    # enfileirado via ARQ (task_dispatch_event_notifications), não mais
+    # síncrono aqui dentro. Notificação pode envolver retries lentos (ex.:
+    # número com erro do lado do WhatsApp, ~3.5s de backoff) e isso atrasava
+    # o evento aparecer em tempo real mesmo com o registro (e o SSE acima)
+    # já prontos (achado em teste local: usuário via demora perceptível pra
+    # "contar" o evento). event-driven de verdade agora: o request retorna
+    # assim que o evento é salvo, notificação roda em paralelo no worker.
     if body.snapshot_path:
         try:
-            from vms.event_clips.service import build_event_clip_service
-            from vms.notifications.service import build_notification_service
-
-            clip = await build_event_clip_service(db).generate_and_upload(
-                vms_event_id=event_id, tenant_id=tenant_id, image_path=body.snapshot_path,
-            )
-            await build_notification_service(db).evaluate_and_dispatch(
-                tenant_id=tenant_id,
-                event_type=body.event_type,
-                event_id=event_id,
-                payload=body.payload or {},
-                message=f"Alerta Next Sec: {body.event_type} detectado",
-                media_url=clip.storage_url if clip.status.value == "uploaded" else None,
-            )
+            arq_pool = getattr(request.app.state, "arq_redis", None)
+            if arq_pool is not None:
+                await arq_pool.enqueue_job(
+                    "task_dispatch_event_notifications",
+                    tenant_id,
+                    body.event_type,
+                    event_id,
+                    body.payload or {},
+                    body.snapshot_path,
+                    body.camera_id,
+                )
         except Exception:
             logger.exception(
-                "Falha no fluxo clipe/notificação para evento %s (não crítico)", event_id
+                "Falha ao enfileirar notificação do evento %s (não crítico)", event_id
             )
 
     return PluginEventResponse(id=event_id)

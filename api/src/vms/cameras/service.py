@@ -22,7 +22,7 @@ from vms.cameras.domain import (
 from vms.cameras.mediamtx import MediaMTXClient
 from vms.cameras.repository import AgentRepositoryPort, CameraRepositoryPort
 from vms.infrastructure.config import get_settings
-from vms.shared.exceptions import NotFoundError, DuplicateError, BusinessRuleViolation
+from vms.shared.exceptions import NotFoundError, DuplicateError, BusinessRuleViolation, UnauthorizedError
 from vms.iam.domain import ApiKeyOwnerType
 from vms.iam.service import ApiKeyService
 
@@ -91,10 +91,19 @@ class CameraService:
                 probe = await OnvifClient.probe(
                     onvif_url, onvif_username or "", onvif_password or ""
                 )
-                if probe.reachable and probe.rtsp_url:
-                    rtsp_url = probe.rtsp_url
-                    if probe.manufacturer and probe.manufacturer != "unknown":
-                        manufacturer = probe.manufacturer.lower()
+                if not probe.reachable or not probe.rtsp_url:
+                    # NOTA (Next Sec): antes disso, uma falha de probe aqui deixava a
+                    # câmera ser criada mesmo assim, com rtsp_url vazio — o MediaMTX
+                    # nunca recebia frame e a tela ficava presa em "Aguardando
+                    # primeiro frame" sem nenhum erro visível (achado durante teste
+                    # local com câmera real).
+                    raise BusinessRuleViolation(
+                        probe.error or "Não foi possível obter a URL RTSP via ONVIF",
+                        details={"onvif_url": onvif_url},
+                    )
+                rtsp_url = probe.rtsp_url
+                if probe.manufacturer and probe.manufacturer != "unknown":
+                    manufacturer = probe.manufacturer.lower()
                 ptz_supported = await PtzClient.check_ptz_supported(
                     onvif_url, onvif_username or "", onvif_password or ""
                 )
@@ -349,11 +358,29 @@ class AgentService:
         """Lista todos os agents do tenant."""
         return await self._agents.list_by_tenant(tenant_id)
 
+    async def update_agent(
+        self,
+        agent_id: str,
+        tenant_id: str,
+        *,
+        name: str | None = None,
+        is_active: bool | None = None,
+    ) -> Agent:
+        """Atualiza nome e/ou status ativo de um agent."""
+        agent = await self.get_agent(agent_id, tenant_id)
+        if name is not None:
+            agent.name = name
+        if is_active is not None:
+            agent.is_active = is_active
+        return await self._agents.update(agent)
+
     async def get_agent_config(
         self, agent_id: str, tenant_id: str
     ) -> tuple[Agent, list[CameraConfig]]:
         """Retorna agent e lista de configurações de câmera para o agent (somente rtsp_pull)."""
         agent = await self.get_agent(agent_id, tenant_id)
+        if not agent.is_active:
+            raise UnauthorizedError("Agent desativado")
         cameras = await self._cameras.list_by_agent(agent_id, tenant_id)
         settings = get_settings()
         configs = [
@@ -380,14 +407,18 @@ class AgentService:
     ) -> Agent:
         """Registra heartbeat do agent e atualiza status para online."""
         agent = await self.get_agent(agent_id, tenant_id)
+        if not agent.is_active:
+            raise UnauthorizedError("Agent desativado")
         agent.mark_online(version, streams_running, streams_failed)
         return await self._agents.update(agent)
 
     async def delete_agent(self, agent_id: str, tenant_id: str) -> None:
-        """Remove agent — a API key associada é revogada via ApiKeyService."""
-        agent = await self.get_agent(agent_id, tenant_id)
-        agent.mark_offline()
-        await self._agents.update(agent)
+        """Remove agent definitivamente e revoga sua(s) API key(s)."""
+        await self.get_agent(agent_id, tenant_id)  # 404 se não existir/outro tenant
+        await self._api_keys.revoke_api_keys_for_owner(
+            ApiKeyOwnerType.AGENT, agent_id, tenant_id
+        )
+        await self._agents.delete(agent_id, tenant_id)
 
 
 async def _notify_agent(agent_id: str, event: str, data: dict) -> None:

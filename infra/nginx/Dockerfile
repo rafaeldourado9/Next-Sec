@@ -1,14 +1,17 @@
 FROM nginx:1.25-alpine
 
-RUN apk add --no-cache curl
-
+# NOTA (Next Sec): apk add curl removido — o entrypoint usa wget (já vem na
+# imagem base), evitando depender do repositório apk (achado durante teste
+# local: dl-cdn.alpinelinux.org falhava por erro de certificado TLS neste
+# ambiente). Ver .genesis/architecture/reuse-plan.md.
 RUN rm /etc/nginx/conf.d/default.conf
 
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
-RUN mkdir -p /var/www/certbot /recordings /tmp/vod
+# /recordings e /tmp/vod removidos — gravação contínua/VOD fora do escopo
+RUN mkdir -p /var/www/certbot
 
 EXPOSE 80
 

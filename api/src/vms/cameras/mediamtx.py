@@ -51,12 +51,20 @@ class MediaMTXClient:
         2. Tenta edit (config existente): atualiza se já provisionado antes.
         3. Tenta add (config nova): cria fresh.
         """
-        body: dict = {
-            "record": True,
-            "recordPath": "/recordings/%path/%Y/%m/%d/%H-%M-%S-%f",
-        }
+        # NOTA (Next Sec): `record: True` aqui contradizia a decisão do projeto
+        # de não gravar continuamente (mediamtx.yml pathDefaults tem record: no)
+        # — cada câmera criada reativava a gravação por path, e o recorder
+        # travando em frames fora de ordem (câmera real via WiFi/RTSP instável)
+        # derrubava o muxer HLS junto, parecendo "a câmera crasha toda hora"
+        # (achado durante teste local). Sem gravação, sem recorder, sem esse
+        # ponto de falha.
+        body: dict = {}
         if source_url:
             body["source"] = source_url
+            # RTSP fonte real (câmera física) — força TCP. UDP perde/reordena
+            # pacote com frequência em rede doméstica, o que quebrava o muxer
+            # HLS (ver "too many reordered frames" nos logs do mediamtx).
+            body["sourceProtocol"] = "tcp"
 
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:

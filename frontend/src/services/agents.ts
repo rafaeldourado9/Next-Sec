@@ -13,6 +13,7 @@ export interface Agent {
   streams_failed: number
   cpu_usage: number | null
   ram_usage: number | null
+  is_active: boolean
   created_at: string
 }
 

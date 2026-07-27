@@ -24,3 +24,10 @@ frontend/dist/
 # IDE
 .vscode/
 .idea/
+
+# Modelos de IA (binários grandes — baixados sob demanda, não versionados;
+# GFPGANv1.4.pth sozinho já excede o limite de 100MB do GitHub). Ver
+# comentários em analytics/core/frame_enhance.py e config.py pra origem.
+analytics/models/*.pb
+analytics/models/*.pth
+!analytics/models/FSRCNN_x4.pb

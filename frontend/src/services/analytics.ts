@@ -91,6 +91,17 @@ export const analyticsService = {
     return data
   },
 
+  // GFPGAN (restauração de rosto) é CPU-bound e pode levar dezenas de
+  // segundos numa máquina sem GPU — timeout generoso (o backend já corta em
+  // 90s) só pra garantir um limite duro caso a resposta nunca volte.
+  enhanceEvent: async (eventId: string): Promise<string> => {
+    const { data } = await api.post(`/analytics/events/${eventId}/enhance`, null, {
+      responseType: 'blob',
+      timeout: 95_000,
+    })
+    return URL.createObjectURL(data as Blob)
+  },
+
   listROIs: async (camera_id?: string, plugin_id?: string): Promise<ROI[]> => {
     const { data } = await api.get<ROI[]>('/analytics/rois', {
       params: { camera_id, plugin_id },

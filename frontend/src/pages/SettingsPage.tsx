@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react'
-import { Save, Palette, Upload, Building2 } from 'lucide-react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { Save, Palette, Upload, Building2, MessageCircle, Loader2, CheckCircle2 } from 'lucide-react'
 import { useThemeStore } from '@/store/themeStore'
 import { api } from '@/services/api'
+import { whatsappService, type WhatsAppStatus } from '@/services/whatsapp'
 import toast from 'react-hot-toast'
 
 const ACCENT_PRESETS = [
@@ -33,6 +34,73 @@ export function SettingsPage() {
 
   const [branding, setBranding]         = useState<Branding>({ company_name: '', cnpj: '', company_address: '', logo_url: '' })
   const [savingBranding, setSavingBranding] = useState(false)
+
+  const [waStatus, setWaStatus]   = useState<WhatsAppStatus | null>(null)
+  const [waQr, setWaQr]           = useState<string | null>(null)
+  const [waLoading, setWaLoading] = useState(false)
+
+  const refreshWaStatus = useCallback(async () => {
+    try {
+      const status = await whatsappService.getStatus()
+      setWaStatus(status)
+      if (status.connected) setWaQr(null)
+      return status
+    } catch {
+      return null
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshWaStatus()
+  }, [refreshWaStatus])
+
+  // Enquanto tem QR pendente, verifica a cada 3s se já conectou
+  useEffect(() => {
+    if (!waQr || waStatus?.connected) return
+    const interval = setInterval(async () => {
+      const status = await refreshWaStatus()
+      if (status?.connected) toast.success('WhatsApp conectado!')
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [waQr, waStatus?.connected, refreshWaStatus])
+
+  // QR do WhatsApp expira rápido (~60s) — gera um novo periodicamente enquanto pendente
+  useEffect(() => {
+    if (!waQr || waStatus?.connected) return
+    const interval = setInterval(async () => {
+      const { qr } = await whatsappService.connect().catch(() => ({ qr: null }))
+      if (qr) setWaQr(qr)
+    }, 45000)
+    return () => clearInterval(interval)
+  }, [waQr, waStatus?.connected])
+
+  const handleWaConnect = async () => {
+    setWaLoading(true)
+    try {
+      const { qr } = await whatsappService.connect()
+      setWaQr(qr)
+      if (!qr) toast.error('Arcanum não retornou QR — tente novamente')
+    } catch {
+      toast.error('Erro ao conectar com o Arcanum')
+    } finally {
+      setWaLoading(false)
+    }
+  }
+
+  const handleWaDisconnect = async () => {
+    if (!confirm('Desconectar o WhatsApp? Alertas por WhatsApp param de ser enviados.')) return
+    setWaLoading(true)
+    try {
+      await whatsappService.disconnect()
+      setWaQr(null)
+      await refreshWaStatus()
+      toast.success('WhatsApp desconectado')
+    } catch {
+      toast.error('Erro ao desconectar')
+    } finally {
+      setWaLoading(false)
+    }
+  }
 
   useEffect(() => {
     api.get('/iam/branding')
@@ -270,6 +338,51 @@ export function SettingsPage() {
         >
           <Save size={16} />{savingBranding ? 'Salvando...' : 'Salvar Dados da Empresa'}
         </button>
+      </div>
+
+      {/* WhatsApp — alertas para contatos via Arcanum */}
+      <div>
+        <p className="text-sm font-semibold text-t1 mb-1 flex items-center gap-2">
+          <MessageCircle size={16} />WhatsApp
+        </p>
+        <p className="text-xs text-t3">Conecte um número para enviar alertas aos contatos cadastrados</p>
+      </div>
+
+      <div className="card p-5 space-y-4">
+        {waStatus?.connected ? (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm text-t1">
+              <CheckCircle2 size={16} className="text-success" />
+              WhatsApp conectado
+            </div>
+            <button
+              className="btn btn-ghost text-danger gap-2"
+              onClick={handleWaDisconnect}
+              disabled={waLoading}
+            >
+              {waLoading ? <Loader2 size={14} className="animate-spin" /> : 'Desconectar'}
+            </button>
+          </div>
+        ) : waQr ? (
+          <div className="flex flex-col items-center gap-3 py-2">
+            <img src={waQr} alt="QR Code WhatsApp" className="w-56 h-56 rounded-lg border" style={{ borderColor: 'var(--border)' }} />
+            <p className="text-xs text-t3 text-center max-w-xs">
+              Abra o WhatsApp no celular → Configurações → Dispositivos conectados → Conectar dispositivo
+            </p>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-t3">Nenhum número conectado ainda</p>
+            <button
+              className="btn btn-primary gap-2"
+              onClick={handleWaConnect}
+              disabled={waLoading}
+            >
+              {waLoading ? <Loader2 size={14} className="animate-spin" /> : <MessageCircle size={14} />}
+              Conectar WhatsApp
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
