@@ -4,6 +4,7 @@ import { analyticsService, type ROI, type AnalyticsCatalogItem, type ROISchedule
 import { PLUGIN_NAMES } from '@/constants/plugins'
 import { POLYGON_REQUIRED, PLUGIN_CONFIG_SCHEMA } from '@/constants/pluginConfigs'
 import { PolygonEditor } from './PolygonEditor'
+import { CalibrationEditor } from './CalibrationEditor'
 import { PluginConfigForm } from './PluginConfigForm'
 import { camerasService } from '@/services/cameras'
 import type { Camera } from '@/types'
@@ -253,6 +254,20 @@ export function ROIEditorPanel({ roi, cameras, plugins, onSave, onCancel, defaul
                 disabled={!streamReady} // Bug 5: desabilita ferramentas até carregamento
               />
             )}
+          </div>
+        )}
+
+        {/* Calibração de velocidade — só pro plugin "speed" */}
+        {pluginId === 'speed' && cameraId && streamReady && (
+          <div>
+            <label className="text-xs text-t3 mb-1 block">Calibração (pontos A/B)</label>
+            <CalibrationEditor
+              cameraId={cameraId}
+              streamUrl={streamUrl ?? undefined}
+              pointA={(config.calib_point_a as [number, number]) ?? null}
+              pointB={(config.calib_point_b as [number, number]) ?? null}
+              onChange={(a, b) => setConfig({ ...config, calib_point_a: a, calib_point_b: b })}
+            />
           </div>
         )}
 

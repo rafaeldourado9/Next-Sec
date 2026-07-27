@@ -47,7 +47,7 @@ class CloudClient:
         self._settings = settings
         self._base_url = str(settings.vms_api_url).rstrip("/")
         self._headers = {
-            "Authorization": f"Bearer {settings.agent_api_key}",
+            "Authorization": f"ApiKey {settings.agent_api_key}",
             "Content-Type": "application/json",
         }
         self._client: httpx.AsyncClient | None = None

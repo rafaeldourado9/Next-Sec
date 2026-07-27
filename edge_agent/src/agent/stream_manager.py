@@ -37,13 +37,17 @@ class StreamManager:
     e faz push para o MediaMTX via RTMP.
     """
 
-    def __init__(self, mediamtx_rtmp_base: str) -> None:
+    def __init__(self, mediamtx_rtmp_base: str, ffmpeg_path: str | None = None) -> None:
         """Inicializa o gerenciador.
 
         Args:
             mediamtx_rtmp_base: URL base RTMP, ex.: rtmp://mediamtx:1935
+            ffmpeg_path: caminho do binário ffmpeg. None busca no PATH
+                (padrão no container Docker) — o instalador nativo passa o
+                caminho absoluto do ffmpeg bundlado.
         """
         self._rtmp_base = mediamtx_rtmp_base.rstrip("/")
+        self._ffmpeg_path = ffmpeg_path or "ffmpeg"
         self._streams: dict[str, StreamProcess] = {}
 
     @property
@@ -140,12 +144,13 @@ class StreamManager:
 
     async def _launch(self, sp: StreamProcess) -> None:
         """Lança o processo ffmpeg para um StreamProcess."""
-        if not shutil.which("ffmpeg"):
+        ffmpeg_bin = self._ffmpeg_path
+        if ffmpeg_bin == "ffmpeg" and not shutil.which("ffmpeg"):
             logger.error("ffmpeg não encontrado no PATH")
             return
 
         cmd = [
-            "ffmpeg",
+            ffmpeg_bin,
             "-loglevel", "warning",
             "-rtsp_transport", "tcp",
             "-i", sp.rtsp_url,

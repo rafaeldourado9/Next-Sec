@@ -19,11 +19,14 @@ dependencies = [
     "structlog>=24.4",
     # Hardware detection
     "psutil>=5.9",
-    # ML inference (edge)
-    "ultralytics>=8.1,<9",
-    "opencv-python-headless>=4.9,<5",
-    "numpy>=1.26,<3",
+    # Serviço nativo Windows (instalador — ver native_installer/windows/)
+    "pywin32>=306; sys_platform == 'win32'",
 ]
+# NOTA (Next Sec): ultralytics/opencv-python-headless/numpy removidos —
+# nunca importados em código real (só um `import torch` opcional e já
+# guardado por try/except em hardware.py, pra detecção de acelerador). Eram
+# só peso morto: infla o build Docker à toa e inviabilizaria um instalador
+# nativo "leve" (torch sozinho é centenas de MB).
 
 [project.optional-dependencies]
 dev = [
@@ -34,6 +37,11 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "respx>=0.21",
+]
+# Empacotamento do instalador nativo (Windows/Linux) — não vai pro container
+# Docker de referência, só pro build do executável standalone.
+packaging = [
+    "pyinstaller>=6.11",
 ]
 
 [tool.hatch.build.targets.wheel]

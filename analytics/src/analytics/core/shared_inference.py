@@ -73,6 +73,7 @@ PLUGIN_CLASSES: dict[str, set[int]] = {
     "biker_detection": {0, 1},  # person + bicycle
     "person_detection": {0},  # person
     "vehicle_detection": {2, 3, 5, 7},  # car, motorcycle, bus, truck
+    "speed": {2, 3, 5, 7},  # car, motorcycle, bus, truck — estimativa de velocidade
     "horse_cart": set(),  # classes custom — não usa shared
     "fire_smoke": set(),  # modelo próprio — não usa shared
     "ppe_detection": set(),  # modelo próprio — não usa shared

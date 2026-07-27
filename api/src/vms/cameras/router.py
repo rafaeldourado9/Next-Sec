@@ -21,10 +21,11 @@ from fastapi import (
 logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vms.cameras.repository import AgentRepository, CameraRepository
+from vms.cameras.repository import AgentRepository, AgentTunnelRepository, CameraRepository
 from vms.cameras.schemas import (
     AgentConfigResponse,
     AgentResponse,
+    AgentTunnelInternal,
     CameraConfigItem,
     CameraResponse,
     CreateAgentRequest,
@@ -43,7 +44,9 @@ from vms.cameras.schemas import (
 )
 from vms.cameras.ptz.router import router as ptz_router
 from vms.cameras.service import AgentService, CameraService
+from vms.cameras.wireguard_client import WireGuardHubClient
 from vms.shared.api.dependencies import ApiKeyHeader, CurrentUser, DbSession, GestorUser
+from vms.infrastructure.config import get_settings
 from vms.infrastructure.middleware.audit_action import audit_action
 from vms.iam.repository import ApiKeyRepository
 from vms.iam.service import ApiKeyService
@@ -61,12 +64,26 @@ def _camera_svc(db: AsyncSession) -> CameraService:
 
 
 def _agent_svc(db: AsyncSession) -> AgentService:
-    """Constrói AgentService com dependências."""
+    """Constrói AgentService com dependências, incluindo túnel WireGuard."""
     return AgentService(
         AgentRepository(db),
         CameraRepository(db),
         ApiKeyService(ApiKeyRepository(db)),
+        AgentTunnelRepository(db),
+        WireGuardHubClient(),
     )
+
+
+def _verify_wg_control_token(request: Request) -> None:
+    """Autenticação do hub WireGuard pro reconcile-on-boot — segredo
+    compartilhado (`WG_CONTROL_TOKEN`), não JWT de usuário nem API key de
+    agent (esse endpoint não pertence a nenhum tenant específico)."""
+    import hmac
+
+    auth = request.headers.get("Authorization", "")
+    expected = f"ApiKey {get_settings().wg_control_token}"
+    if not hmac.compare_digest(auth, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de controle inválido")
 
 
 # ─── Câmeras ──────────────────────────────────────────────────────────────────
@@ -418,9 +435,17 @@ async def create_agent(
     claims: CurrentUser,
     db: DbSession,
 ) -> CreateAgentResponse:
-    """Cria agent e emite API key (exibida uma única vez)."""
+    """Cria agent, emite API key e provisiona túnel WireGuard (tudo exibido
+    uma única vez — a chave privada do túnel nunca é persistida)."""
     svc = _agent_svc(db)
-    agent, plain_key = await svc.create_agent(claims.tenant_id, body.name)
+    bundle = await svc.create_agent_with_tunnel(claims.tenant_id, body.name)
+    # Commit explícito ANTES de montar a resposta — o peer no hub WireGuard
+    # é um efeito colateral externo, não transacional com o Postgres. Um bug
+    # na serialização da resposta (já aconteceu — ver is_active esquecido)
+    # não pode fazer o rollback da sessão desfazer o agent/tunnel enquanto o
+    # peer real já existe no hub, gerando um peer órfão sem registro no banco.
+    await db.commit()
+    agent = bundle.agent
     return CreateAgentResponse(
         id=agent.id,
         name=agent.name,
@@ -429,9 +454,35 @@ async def create_agent(
         version=agent.version,
         streams_running=agent.streams_running,
         streams_failed=agent.streams_failed,
+        is_active=agent.is_active,
         created_at=agent.created_at,
-        api_key=plain_key,
+        api_key=bundle.api_key,
+        wg_private_key=bundle.wg_private_key,
+        wg_public_key_hub=bundle.wg_public_key_hub,
+        wg_endpoint=bundle.wg_endpoint,
+        wg_tunnel_ip=bundle.wg_tunnel_ip,
+        wg_allowed_ips=bundle.wg_allowed_ips,
     )
+
+
+@router.get(
+    "/agents/internal/tunnels",
+    response_model=list[AgentTunnelInternal],
+    summary="[interno] Lista de túneis ativos — reconcile do hub WireGuard",
+    include_in_schema=False,
+)
+async def list_internal_tunnels(
+    request: Request,
+    db: DbSession,
+) -> list[AgentTunnelInternal]:
+    """Consumido só pelo container do hub WireGuard no boot, pra reconciliar
+    seu wg0 (que sobe sem peer nenhum) contra o Postgres (fonte de verdade).
+    Autenticado por segredo compartilhado, não por tenant/JWT — a lista
+    cruza todos os tenants de propósito."""
+    _verify_wg_control_token(request)
+    svc = _agent_svc(db)
+    tunnels = await svc.list_active_tunnels()
+    return [AgentTunnelInternal(public_key=t.public_key, tunnel_ip=f"{t.tunnel_ip}/32") for t in tunnels]
 
 
 @router.get(

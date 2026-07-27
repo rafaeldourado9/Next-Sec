@@ -9,8 +9,11 @@ from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+from dataclasses import dataclass
+
 from vms.cameras.domain import (
     Agent,
+    AgentTunnel,
     Camera,
     CameraConfig,
     CameraManufacturer,
@@ -20,11 +23,35 @@ from vms.cameras.domain import (
     StreamUrls,
 )
 from vms.cameras.mediamtx import MediaMTXClient
-from vms.cameras.repository import AgentRepositoryPort, CameraRepositoryPort
+from vms.cameras.repository import AgentRepositoryPort, AgentTunnelRepositoryPort, CameraRepositoryPort
+from vms.cameras.wireguard_client import WireGuardHubClient
 from vms.infrastructure.config import get_settings
+from vms.infrastructure.security import generate_wg_keypair
 from vms.shared.exceptions import NotFoundError, DuplicateError, BusinessRuleViolation, UnauthorizedError
 from vms.iam.domain import ApiKeyOwnerType
 from vms.iam.service import ApiKeyService
+
+
+def _wg_subnet_prefix(subnet_cidr: str) -> str:
+    """`"10.60.0.0/24"` -> `"10.60.0"` — os 3 primeiros octetos da subnet do
+    túnel, usados pra montar o IP completo de cada agent (`{prefix}.{n}`)."""
+    network_addr = subnet_cidr.split("/")[0]
+    return ".".join(network_addr.split(".")[:3])
+
+
+@dataclass
+class AgentTunnelBundle:
+    """Retorno de `create_agent_with_tunnel` — tudo que o agent precisa pra
+    montar seu próprio `wg0.conf`. `wg_private_key` só existe aqui, nunca é
+    persistida (mesmo contrato do `api_key` em texto puro)."""
+
+    agent: Agent
+    api_key: str
+    wg_private_key: str
+    wg_public_key_hub: str
+    wg_endpoint: str
+    wg_tunnel_ip: str
+    wg_allowed_ips: str
 
 
 class CameraService:
@@ -349,10 +376,16 @@ class AgentService:
         agent_repo: AgentRepositoryPort,
         camera_repo: CameraRepositoryPort,
         api_key_service: ApiKeyService,
+        tunnel_repo: AgentTunnelRepositoryPort | None = None,
+        wg_hub_client: WireGuardHubClient | None = None,
     ) -> None:
         self._agents = agent_repo
         self._cameras = camera_repo
         self._api_keys = api_key_service
+        # Opcionais: endpoints que não mexem com túnel (get_agent_config,
+        # heartbeat, etc.) não precisam construir esses dois toda vez.
+        self._tunnels = tunnel_repo
+        self._wg_hub = wg_hub_client
 
     async def create_agent(self, tenant_id: str, name: str) -> tuple[Agent, str]:
         """
@@ -372,6 +405,54 @@ class AgentService:
             owner_id=saved.id,
         )
         return saved, plain
+
+    async def create_agent_with_tunnel(self, tenant_id: str, name: str) -> AgentTunnelBundle:
+        """
+        Cria agent, emite API key e provisiona o túnel WireGuard.
+
+        Se qualquer passo do túnel falhar (ex.: hub inacessível), desfaz tudo
+        — não deixa um agent "órfão" sem túnel, que pareceria criado mas
+        nunca conseguiria se conectar.
+        """
+        assert self._tunnels is not None and self._wg_hub is not None, (
+            "AgentService precisa de tunnel_repo/wg_hub_client pra create_agent_with_tunnel"
+        )
+        agent, plain_key = await self.create_agent(tenant_id, name)
+        try:
+            settings = get_settings()
+            private_key, public_key = generate_wg_keypair()
+            offset = await self._tunnels.next_ip_offset()
+            subnet_prefix = _wg_subnet_prefix(settings.wg_subnet)
+            tunnel_ip = f"{subnet_prefix}.{offset}"
+
+            hub_info = await self._wg_hub.get_hub_info()
+
+            await self._tunnels.create(AgentTunnel(
+                id=str(uuid.uuid4()),
+                agent_id=agent.id,
+                public_key=public_key,
+                tunnel_ip=tunnel_ip,
+            ))
+            await self._wg_hub.add_peer(public_key, tunnel_ip)
+        except Exception:
+            logger.exception(
+                "Falha ao provisionar túnel WG pro agent %s — desfazendo criação", agent.id
+            )
+            await self._api_keys.revoke_api_keys_for_owner(
+                ApiKeyOwnerType.AGENT, agent.id, tenant_id
+            )
+            await self._agents.delete(agent.id, tenant_id)
+            raise
+
+        return AgentTunnelBundle(
+            agent=agent,
+            api_key=plain_key,
+            wg_private_key=private_key,
+            wg_public_key_hub=hub_info["public_key"],
+            wg_endpoint=hub_info.get("endpoint") or settings.wg_public_endpoint,
+            wg_tunnel_ip=f"{tunnel_ip}/32",
+            wg_allowed_ips=f"{subnet_prefix}.1/32",
+        )
 
     async def get_agent(self, agent_id: str, tenant_id: str) -> Agent:
         """Retorna agent por ID. Lança NotFoundError se não encontrado."""
@@ -439,12 +520,31 @@ class AgentService:
         return await self._agents.update(agent)
 
     async def delete_agent(self, agent_id: str, tenant_id: str) -> None:
-        """Remove agent definitivamente e revoga sua(s) API key(s)."""
+        """Remove agent definitivamente e revoga sua(s) API key(s) e túnel."""
         await self.get_agent(agent_id, tenant_id)  # 404 se não existir/outro tenant
         await self._api_keys.revoke_api_keys_for_owner(
             ApiKeyOwnerType.AGENT, agent_id, tenant_id
         )
+        if self._tunnels is not None:
+            try:
+                tunnel = await self._tunnels.get_by_agent(agent_id)
+                if tunnel:
+                    if self._wg_hub is not None:
+                        await self._wg_hub.remove_peer(tunnel.public_key)
+                    await self._tunnels.delete(tunnel.id)
+            except Exception:
+                # Best-effort — não bloqueia a remoção do agent por causa de
+                # um hub temporariamente inacessível (mesmo espírito do
+                # cleanup de MediaMTX em CameraService.delete_camera).
+                logger.warning("Falha ao revogar túnel WG do agent %s (não crítico)", agent_id)
         await self._agents.delete(agent_id, tenant_id)
+
+    async def list_active_tunnels(self) -> list[AgentTunnel]:
+        """Todos os túneis ativos, de qualquer tenant — usado pelo hub
+        WireGuard pra reconciliar seu estado no boot (fonte de verdade é o
+        Postgres, não o estado runtime do container do hub)."""
+        assert self._tunnels is not None
+        return await self._tunnels.list_active()
 
 
 async def _notify_agent(agent_id: str, event: str, data: dict) -> None:

@@ -7,6 +7,13 @@ __pycache__/
 .mypy_cache/
 .venv/
 venv/
+.venv-native/
+build/
+
+# Instalador nativo — binários (PyInstaller + nssm.exe de terceiros), não
+# vão pro git. install.ps1/uninstall.ps1/*.bat continuam versionados.
+native_installer/windows/release/*.exe
+native_installer/windows/nssm.exe
 
 # Node / frontend
 node_modules/

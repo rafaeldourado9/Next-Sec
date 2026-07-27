@@ -253,11 +253,29 @@ class AgentResponse(BaseModel):
 
 
 class CreateAgentResponse(AgentResponse):
-    """Resposta de criação de agent — inclui a API key em texto plano (única vez)."""
+    """Resposta de criação de agent — inclui API key e bundle do túnel
+    WireGuard em texto plano (única vez — a chave privada nunca é persistida,
+    nem re-consultável depois desta resposta)."""
 
     api_key: str = Field(
         ..., description="API key em texto plano. Guarde — não será exibida novamente."
     )
+    wg_private_key: str = Field(..., description="Chave privada WireGuard do agent — nunca persistida no servidor.")
+    wg_public_key_hub: str = Field(..., description="Chave pública do hub (VPS).")
+    wg_endpoint: str = Field(..., description="host:port público do hub pra o agent discar.")
+    wg_tunnel_ip: str = Field(..., description="IP alocado pro agent dentro do túnel, ex: 10.60.0.5/32.")
+    wg_allowed_ips: str = Field(
+        ..., description="AllowedIPs do lado do agent — só o IP do hub (split-tunnel, não afeta o resto da rede do cliente).",
+    )
+
+
+class AgentTunnelInternal(BaseModel):
+    """Item retornado por `GET /agents/internal/tunnels` — consumido só pelo
+    hub WireGuard pra reconciliar seu estado no boot (auth via WG_CONTROL_TOKEN,
+    não JWT de usuário)."""
+
+    public_key: str
+    tunnel_ip: str
 
 
 class CameraConfigItem(BaseModel):

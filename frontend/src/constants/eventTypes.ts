@@ -57,6 +57,10 @@ export const EVENT_TYPE_LABELS: Record<string, string> = {
   // Cavalo/Carroça
   'analytics.horse_cart': 'Cavalo/Carroça',
   'horse_cart': 'Cavalo/Carroça',
+
+  // Velocidade estimada
+  'analytics.speed.measured': 'Velocidade estimada',
+  'speed': 'Velocidade estimada',
 }
 
 /**

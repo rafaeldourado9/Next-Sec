@@ -17,6 +17,15 @@ export interface Agent {
   created_at: string
 }
 
+export interface CreateAgentResult extends Agent {
+  api_key: string
+  wg_private_key: string
+  wg_public_key_hub: string
+  wg_endpoint: string
+  wg_tunnel_ip: string
+  wg_allowed_ips: string
+}
+
 export interface CameraConfigItem {
   camera_id: string
   name: string
@@ -31,7 +40,7 @@ export const agentsService = {
     return data
   },
 
-  async create(name: string): Promise<Agent> {
+  async create(name: string): Promise<CreateAgentResult> {
     const { data } = await api.post('/agents', { name })
     return data
   },

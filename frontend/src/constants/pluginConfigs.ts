@@ -33,6 +33,10 @@ export const PLUGIN_CONFIG_SCHEMA: Record<string, FieldDef[]> = {
   ppe_detection: [],
   biker_detection: [],
   horse_cart: [],
+  speed: [
+    { key: 'min_confidence', label: 'Confiança mínima', type: 'number', min: 0.1, max: 1, step: 0.05, default: 0.5 },
+    { key: 'calib_distance_m', label: 'Distância real entre os pontos A/B (metros)', type: 'number', min: 0.5, max: 500, step: 0.5, default: 10 },
+  ],
 }
 
 /** Plugins que exigem polígono obrigatório para funcionar. */
@@ -45,4 +49,5 @@ export const POLYGON_REQUIRED: Record<string, boolean> = {
   ppe_detection: false,
   biker_detection: false,
   horse_cart: false,
+  speed: true,
 }

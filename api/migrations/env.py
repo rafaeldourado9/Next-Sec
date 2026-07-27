@@ -16,7 +16,7 @@ from sqlalchemy.engine import Connection
 # .genesis/contracts/db-schema.sql), importar aqui também para o
 # autogenerate do baseline (0001) enxergá-los.
 from vms.iam.models import TenantModel, UserModel, ApiKeyModel  # noqa: F401
-from vms.cameras.models import CameraModel, AgentModel  # noqa: F401
+from vms.cameras.models import CameraModel, AgentModel, AgentTunnelModel  # noqa: F401
 from vms.events.models import VmsEventModel  # noqa: F401
 from vms.analytics.models import AnalyticsROI, PluginInstallation, AnalyticsEvent  # noqa: F401
 from vms.notifications.models import NotificationRuleModel, NotificationLogModel  # noqa: F401
@@ -24,6 +24,7 @@ from vms.lgpd.models import RetentionPolicyModel, ConsentRecordModel  # noqa: F4
 from vms.audit.models import AuditLogModel  # noqa: F401
 from vms.billing.models import LicenseKeyModel  # noqa: F401
 from vms.recordings.models import RecordingWindowModel  # noqa: F401
+from vms.reports.models import ReportModel  # noqa: F401
 from vms.core.database import Base
 
 # Objeto de configuração do Alembic com acesso ao alembic.ini

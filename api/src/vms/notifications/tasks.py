@@ -124,6 +124,7 @@ _EVENT_TITLES = {
     "analytics.intrusion.crossed": "🚨 Cerca Virtual",
     "analytics.face.recognized": "👤 Reconhecimento Facial",
     "alpr_detected": "🚗 Placa Detectada",
+    "analytics.speed.measured": "🚗💨 Velocidade Estimada",
 }
 _CLASS_LABELS = {
     "person": "Pessoa",
@@ -162,6 +163,9 @@ def _build_friendly_message(
     direction = _DIRECTION_LABELS.get(payload.get("direction"))
     if cls and direction:
         lines.append(f"{cls} {direction}")
+    speed_kmh = payload.get("speed_kmh")
+    if speed_kmh is not None:
+        lines.append(f"{cls or 'Veículo'}: {speed_kmh} km/h")
     confidence = payload.get("confidence")
     if confidence is not None:
         lines.append(f"Confiança: {round(float(confidence) * 100)}%")

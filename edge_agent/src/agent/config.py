@@ -26,6 +26,19 @@ class Settings(BaseSettings):
     # URL base do MediaMTX (ex.: rtmp://mediamtx:1935)
     mediamtx_rtmp_url: str = "rtmp://mediamtx:1935"
 
+    # Caminho do binário ffmpeg — None usa o PATH (padrão no container Docker,
+    # onde ffmpeg vem instalado via apt). O instalador nativo Windows/Linux
+    # bundla um ffmpeg estático ao lado do executável e aponta pra ele aqui,
+    # já que não há garantia de PATH configurado na máquina do cliente.
+    ffmpeg_path: str | None = None
+
+    # Relay de webhook local — recebe o POST de uma câmera ALPR física na LAN
+    # (que só aceita configurar um IP local, não um domínio público) e repassa
+    # pro sistema central através do túnel. Desligado por padrão.
+    webhook_relay_enabled: bool = False
+    webhook_relay_host: str = "0.0.0.0"
+    webhook_relay_port: int = 8080
+
     # Timeout HTTP (segundos)
     http_timeout: float = 10.0
 

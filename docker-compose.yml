@@ -84,6 +84,36 @@ services:
     # Gravação contínua é opt-in por câmera (cameras.recording_enabled),
     # ligada via API pelo cameras/mediamtx.py — ver infra/mediamtx/mediamtx.yml.
 
+  # ─── WireGuard (túnel do agent — resolve CGNAT/ausência de IP fixo do
+  # cliente. Hub aqui, peer do lado do agent — ver plano do túnel) ──────────
+  wireguard:
+    build:
+      context: ./infra/wireguard
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    ports:
+      - "51820:51820/udp"
+    environment:
+      - WG_HUB_ADDRESS=10.60.0.1/24
+      - WG_LISTEN_PORT=51820
+      - WG_CONTROL_TOKEN=${WG_CONTROL_TOKEN:-dev-wg-control-key}
+      - WG_PUBLIC_ENDPOINT=${WG_PUBLIC_ENDPOINT:-localhost:51820}
+      - VMS_API_INTERNAL_URL=http://api:8000
+      - MEDIAMTX_RTMP_INTERNAL=mediamtx:1935
+    volumes:
+      - wireguard_data:/etc/wireguard
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # python3 (não wget/curl — nenhum dos dois vem por padrão no
+      # python:3.12-slim, e não vale a pena um apt-get extra só pra isso)
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks: [next_sec]
+
   # ─── API Service ──────────────────────────────────────────────────────────
   api:
     build:
@@ -114,6 +144,11 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - ENVIRONMENT=${ENVIRONMENT:-production}
       - VMS_API_KEY=${VMS_API_KEY:-dev-analytics-key}
+      # Túnel WireGuard do agent (resolve CGNAT — ver plano do túnel)
+      - WG_HUB_INTERNAL_URL=http://wireguard:8080
+      - WG_CONTROL_TOKEN=${WG_CONTROL_TOKEN:-dev-wg-control-key}
+      - WG_PUBLIC_ENDPOINT=${WG_PUBLIC_ENDPOINT:-localhost:51820}
+      - WG_SUBNET=${WG_SUBNET:-10.60.0.0/24}
     volumes:
       - ./api:/app
       - snapshots:/snapshots
@@ -269,6 +304,10 @@ services:
     volumes:
       - ./infra/nginx/certs:/etc/nginx/certs:ro
       - ./infra/nginx/certbot:/var/www/certbot:ro
+      # Instalador do agent (Windows) — build via PyInstaller, ver
+      # native_installer/windows/. Binário não vai pro git (veja .gitignore);
+      # precisa ser gerado uma vez e colocado em release/ antes do deploy.
+      - ./native_installer/windows/release:/usr/share/nginx/agent-downloads:ro
     depends_on:
       - api
       - frontend
@@ -303,7 +342,11 @@ services:
       retries: 3
     networks: [next_sec]
 
-  # ─── Cloudflare Tunnel (dev — expõe API para teste de webhooks externos) ──
+  # ─── Cloudflare Tunnel (expõe a stack p/ config de webhook de câmera) ─────
+  # Sem profile — sobe sempre junto com o resto (usuário pediu, pra não
+  # precisar lembrar de --profile dev toda vez). Quando migrar pra uma VPS
+  # com domínio próprio (DuckDNS/certbot), revisitar: provavelmente desliga
+  # esse quick tunnel de vez em favor do domínio real.
   cloudflared:
     build:
       context: ./infra/cloudflared
@@ -316,7 +359,6 @@ services:
       - tunnel_data:/tunnel
     depends_on:
       - nginx
-    profiles: [dev]                  # `docker compose --profile dev up`
     networks: [next_sec]
 
   # ─── Backup do Postgres (dados de tenant/evento/audit/LGPD — sem vídeo) ───
@@ -358,6 +400,7 @@ volumes:
   minio_data:
   arcanum_data:
   recordings:
+  wireguard_data:
 
 networks:
   next_sec:

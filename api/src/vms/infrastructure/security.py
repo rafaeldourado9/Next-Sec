@@ -1,5 +1,6 @@
-"""Utilitários de segurança: JWT, API keys, HMAC."""
+"""Utilitários de segurança: JWT, API keys, HMAC, WireGuard."""
 
+import base64
 import hashlib
 import hmac
 import secrets
@@ -7,6 +8,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
 from jose import JWTError, jwt
 
 from vms.infrastructure.config.settings import get_settings
@@ -161,6 +169,29 @@ def verify_api_key(plain: str, hashed: str) -> bool:
 def extract_key_prefix(plain_key: str) -> str:
     """Extrai o prefixo de busca de uma API key."""
     return plain_key[:12]
+
+
+# ─── WireGuard (túnel do agent — ver ADR do túnel) ────────────────────────────
+
+def generate_wg_keypair() -> tuple[str, str]:
+    """
+    Gera um par de chaves WireGuard (Curve25519, mesmo formato de `wg genkey`
+    / `wg pubkey` — raw 32 bytes, base64). `cryptography` já é dependência
+    transitiva via `python-jose[cryptography]`, então isso não precisa do
+    binário `wireguard-tools` instalado no container da API.
+
+    Retorna:
+        tuple: (private_key_b64, public_key_b64) — a privada é devolvida
+        ao chamador uma única vez e NUNCA deve ser persistida (mesmo
+        contrato de `generate_api_key`).
+    """
+    private_key = X25519PrivateKey.generate()
+    public_key = private_key.public_key()
+    priv_bytes = private_key.private_bytes(
+        encoding=Encoding.Raw, format=PrivateFormat.Raw, encryption_algorithm=NoEncryption(),
+    )
+    pub_bytes = public_key.public_bytes(encoding=Encoding.Raw, format=PublicFormat.Raw)
+    return base64.b64encode(priv_bytes).decode(), base64.b64encode(pub_bytes).decode()
 
 
 # ─── HMAC para webhooks de saída ──────────────────────────────────────────────

@@ -5,18 +5,19 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import delete as sa_delete, select, update
+from sqlalchemy import delete as sa_delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vms.cameras.domain import (
     Agent,
     AgentStatus,
+    AgentTunnel,
     Camera,
     CameraManufacturer,
     StreamProtocol,
     StreamQuality,
 )
-from vms.cameras.models import AgentModel, CameraModel
+from vms.cameras.models import AgentModel, AgentTunnelModel, CameraModel
 
 
 # ─── Ports (interfaces) ───────────────────────────────────────────────────────
@@ -50,6 +51,16 @@ class AgentRepositoryPort(Protocol):
     async def create(self, agent: Agent) -> Agent: ...
     async def update(self, agent: Agent) -> Agent: ...
     async def delete(self, agent_id: str, tenant_id: str) -> bool: ...
+
+
+class AgentTunnelRepositoryPort(Protocol):
+    """Interface do repositório de túneis WireGuard de agents."""
+
+    async def next_ip_offset(self) -> int: ...
+    async def get_by_agent(self, agent_id: str) -> AgentTunnel | None: ...
+    async def create(self, tunnel: AgentTunnel) -> AgentTunnel: ...
+    async def delete(self, tunnel_id: str) -> bool: ...
+    async def list_active(self) -> list[AgentTunnel]: ...
 
 
 # ─── Conversores ORM ↔ Domain ─────────────────────────────────────────────────
@@ -372,3 +383,60 @@ class AgentRepository:
         )
         result = await self._session.execute(stmt)
         return result.rowcount > 0
+
+
+def _agent_tunnel_to_domain(m: AgentTunnelModel) -> AgentTunnel:
+    """Converte modelo ORM para entidade de domínio AgentTunnel."""
+    return AgentTunnel(
+        id=m.id,
+        agent_id=m.agent_id,
+        public_key=m.public_key,
+        tunnel_ip=m.tunnel_ip,
+        is_active=m.is_active,
+        created_at=m.created_at,
+    )
+
+
+class AgentTunnelRepository:
+    """Repositório SQLAlchemy para AgentTunnel."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def next_ip_offset(self) -> int:
+        """Próximo offset livre pra alocação de IP (SEQUENCE — sem race
+        condition em criação concorrente de agents, ao contrário de um
+        `SELECT MAX(ip)+1`)."""
+        result = await self._session.execute(text("SELECT nextval('agent_tunnel_ip_seq')"))
+        return result.scalar_one()
+
+    async def get_by_agent(self, agent_id: str) -> AgentTunnel | None:
+        stmt = select(AgentTunnelModel).where(AgentTunnelModel.agent_id == agent_id)
+        result = await self._session.scalar(stmt)
+        return _agent_tunnel_to_domain(result) if result else None
+
+    async def create(self, tunnel: AgentTunnel) -> AgentTunnel:
+        model = AgentTunnelModel(
+            id=tunnel.id,
+            agent_id=tunnel.agent_id,
+            public_key=tunnel.public_key,
+            tunnel_ip=tunnel.tunnel_ip,
+            is_active=tunnel.is_active,
+        )
+        self._session.add(model)
+        await self._session.flush()
+        await self._session.refresh(model)
+        return _agent_tunnel_to_domain(model)
+
+    async def delete(self, tunnel_id: str) -> bool:
+        stmt = sa_delete(AgentTunnelModel).where(AgentTunnelModel.id == tunnel_id)
+        result = await self._session.execute(stmt)
+        return result.rowcount > 0
+
+    async def list_active(self) -> list[AgentTunnel]:
+        """Lista todos os túneis ativos, de qualquer tenant — usado pelo
+        reconcile do hub WireGuard no boot (`GET /agents/internal/tunnels`),
+        que precisa do estado completo, não filtrado por tenant."""
+        stmt = select(AgentTunnelModel).where(AgentTunnelModel.is_active.is_(True))
+        result = await self._session.scalars(stmt)
+        return [_agent_tunnel_to_domain(m) for m in result.all()]

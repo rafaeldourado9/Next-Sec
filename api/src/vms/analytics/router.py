@@ -112,6 +112,17 @@ CATALOG = [
         is_available=True,
         classes=["person", "car", "truck"],
     ),
+    PluginCatalogItem(
+        id="speed",
+        name="Velocidade Estimada",
+        description="Estima a velocidade real (km/h) de veículos que atravessam uma zona calibrada. Requer calibração de 2 pontos com distância conhecida na cena — não é um radar de verdade, é uma estimativa por vídeo.",
+        version="1.0.0",
+        category="traffic",
+        model_size="3.2 MB",
+        fps_cost=1,
+        is_available=True,
+        classes=["car", "motorcycle", "bus", "truck"],
+    ),
 ]
 # NOTA (Next Sec): reconhecimento facial saiu do catálogo de ROI — não é mais
 # um plugin ao vivo por zona, virou busca sob demanda a partir de um rosto

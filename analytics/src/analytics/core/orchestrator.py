@@ -38,6 +38,7 @@ SHARED_MODELS = {
         "person_detection",
         "vehicle_detection",
         "vehicle_count",
+        "speed",
     },
 }
 

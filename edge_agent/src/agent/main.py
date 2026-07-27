@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from collections.abc import Callable
 
 import structlog
 
@@ -11,6 +12,7 @@ from agent.cloud_client import CloudClient
 from agent.config import get_settings
 from agent.health_checker import HealthChecker
 from agent.stream_manager import StreamManager
+from agent.webhook_relay import WebhookRelay
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -43,14 +45,25 @@ class EdgeAgent:
         """Inicializa o agent com as configurações do ambiente."""
         self._settings = get_settings()
         self._client = CloudClient(self._settings)
-        self._stream_manager = StreamManager(self._settings.mediamtx_rtmp_url)
+        self._stream_manager = StreamManager(self._settings.mediamtx_rtmp_url, self._settings.ffmpeg_path)
         self._health_checker = HealthChecker(self._stream_manager)
+        self._webhook_relay = (
+            WebhookRelay(
+                str(self._settings.vms_api_url),
+                self._settings.webhook_relay_host,
+                self._settings.webhook_relay_port,
+            )
+            if self._settings.webhook_relay_enabled
+            else None
+        )
         self._running = False
 
     async def startup(self) -> None:
         """Inicializa componentes e carrega config inicial."""
         await self._client.start()
         await self._health_checker.start()
+        if self._webhook_relay is not None:
+            self._webhook_relay.start()
         await self._sync_config()
         await self._client.send_heartbeat("online")
         self._running = True
@@ -59,6 +72,8 @@ class EdgeAgent:
     async def shutdown(self) -> None:
         """Encerra o agent graciosamente."""
         self._running = False
+        if self._webhook_relay is not None:
+            self._webhook_relay.stop()
         try:
             await self._client.send_heartbeat("offline")
         except Exception:  # noqa: BLE001
@@ -121,23 +136,43 @@ class EdgeAgent:
             logger.warning("Falha ao sincronizar config", error=str(exc))
 
 
-async def _main() -> None:
-    """Ponto de entrada assíncrono do Edge Agent."""
+async def _main(ready_callback: Callable[[asyncio.AbstractEventLoop, asyncio.Event], None] | None = None) -> None:
+    """Ponto de entrada assíncrono do Edge Agent.
+
+    `ready_callback`: usado só pelo serviço Windows (`native_installer/windows/
+    agent_service.py`), que precisa parar o agent a partir de uma thread
+    diferente (o SCM entrega o stop request numa thread própria, não na
+    thread do event loop) — chamar `shutdown_event.set()` direto de outra
+    thread não é seguro; é preciso `loop.call_soon_threadsafe(...)`. Esse
+    callback entrega `(loop, shutdown_event)` pro chamador guardar as
+    referências ANTES de qualquer await, garantindo que ambas já pertencem
+    à thread certa. Uma Windows service não recebe SIGINT/SIGTERM como um
+    processo de console recebe, então os handlers de sinal abaixo não valem
+    nesse caso — por isso o serviço precisa desse mecanismo à parte.
+    """
     settings = get_settings()
     _configure_logging(settings.log_level)
 
     agent = EdgeAgent()
     loop = asyncio.get_running_loop()
-
-    # Graceful shutdown em SIGINT/SIGTERM
     shutdown_event = asyncio.Event()
+
+    if ready_callback is not None:
+        ready_callback(loop, shutdown_event)
 
     def _handle_signal() -> None:
         logger.info("Sinal de desligamento recebido")
         shutdown_event.set()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _handle_signal)
+        try:
+            loop.add_signal_handler(sig, _handle_signal)
+        except NotImplementedError:
+            # Windows: ProactorEventLoop/SelectorEventLoop não suportam
+            # add_signal_handler — só SIGINT funciona, via signal.signal
+            # (executando como processo de console, não como serviço).
+            if sig == signal.SIGINT:
+                signal.signal(sig, lambda *_: loop.call_soon_threadsafe(_handle_signal))
 
     await agent.startup()
 
@@ -149,9 +184,9 @@ async def _main() -> None:
     await agent.shutdown()
 
 
-def main() -> None:
-    """Entry point síncrono."""
-    asyncio.run(_main())
+def main(ready_callback: Callable[[asyncio.AbstractEventLoop, asyncio.Event], None] | None = None) -> None:
+    """Entry point síncrono. `ready_callback` — ver docstring de `_main`."""
+    asyncio.run(_main(ready_callback))
 
 
 if __name__ == "__main__":

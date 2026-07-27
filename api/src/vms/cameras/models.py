@@ -44,6 +44,35 @@ class AgentModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     cameras: Mapped[list["CameraModel"]] = relationship("CameraModel", back_populates="agent")
+    tunnel: Mapped["AgentTunnelModel | None"] = relationship(
+        "AgentTunnelModel", back_populates="agent", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class AgentTunnelModel(Base):
+    """Túnel WireGuard de um agent — só guarda a chave PÚBLICA.
+
+    A chave privada é gerada em memória na criação do agent e devolvida uma
+    única vez na resposta da API (ver `AgentService.create_agent_with_tunnel`)
+    — nunca persistida, mesmo padrão já usado por `ApiKeyModel` pra não
+    guardar a chave em texto puro.
+    """
+
+    __tablename__ = "agent_tunnels"
+
+    id: Mapped[str] = mapped_column(_UUID_TYPE, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(
+        _UUID_TYPE,
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    public_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    tunnel_ip: Mapped[str] = mapped_column(String(18), nullable=False, unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    agent: Mapped["AgentModel"] = relationship("AgentModel", back_populates="tunnel")
 
 
 class CameraModel(Base):

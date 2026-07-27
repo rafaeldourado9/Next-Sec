@@ -203,6 +203,23 @@ class Agent:
 
 
 @dataclass
+class AgentTunnel:
+    """
+    Túnel WireGuard de um agent — só guarda a chave pública.
+
+    A chave privada nunca circula por aqui: é gerada, devolvida uma única
+    vez na resposta da API e descartada (mesmo padrão da API key).
+    """
+
+    id: EntityId
+    agent_id: EntityId
+    public_key: str
+    tunnel_ip: str
+    is_active: bool = True
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
 class Camera(AggregateRoot):
     """
     Câmera de segurança gerenciada pelo VMS.

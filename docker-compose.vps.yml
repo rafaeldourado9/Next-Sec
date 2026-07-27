@@ -1,0 +1,11 @@
+# Override pra deploy na VPS compartilhada (fastos, 2.25.180.57) — ver
+# docs/DEPLOY_VPS.md. Uso: docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
+#
+# Diferença do ambiente local: nginx do Next Sec NÃO publica 80/443 no host
+# aqui — quem já ocupa essas portas na VPS é o nginx compartilhado do FastOS
+# (fastos-prod-nginx-1), que faz proxy pro nginx do Next Sec através de uma
+# rede Docker dedicada (next_sec_edge, criada fora do compose — ver manual).
+# Sem isso o `docker compose up` falharia com "port is already allocated".
+services:
+  nginx:
+    ports: !reset []

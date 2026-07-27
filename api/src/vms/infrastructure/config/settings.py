@@ -86,6 +86,16 @@ class Settings(BaseSettings):
     alpr_dedup_ttl_seconds: int = Field(default=60)
     alpr_min_confidence: float = Field(default=0.80)
 
+    # ─── Túnel WireGuard do agent (resolve CGNAT — ver plano do túnel) ─────
+    # URL interna do container hub (nunca exposta ao host — só api<->hub)
+    wg_hub_internal_url: str = Field(default="http://wireguard:8080")
+    # Segredo compartilhado api<->hub, mesmo padrão do VMS_API_KEY
+    wg_control_token: str = Field(default="dev-wg-control-key")
+    # host:port público que o agent disca de fora (ex: vpn.seudominio.com:51820)
+    wg_public_endpoint: str = Field(default="localhost:51820")
+    # Subnet do túnel — .1 é sempre o hub; agents recebem o próximo IP livre
+    wg_subnet: str = Field(default="10.60.0.0/24")
+
     # ─── Limites ──────────────────────────────────────────────────────────
     max_cameras: int = Field(default=200)
 

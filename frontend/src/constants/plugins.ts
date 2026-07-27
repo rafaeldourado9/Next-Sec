@@ -8,6 +8,7 @@ export const PLUGIN_NAMES: Record<string, string> = {
   lpr_parking:         'LPR / Estacionamento',
   weapon_detection:    'Detecção de Armas',
   face_recognition:    'Reconhecimento Facial',
+  speed:               'Velocidade Estimada',
 }
 
 /** Cor hex por severidade de evento — usada em marcadores de timeline e chips. */
