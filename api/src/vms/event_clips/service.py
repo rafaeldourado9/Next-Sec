@@ -10,16 +10,14 @@ próxima sprint, não deste MVP.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import tempfile
 import uuid
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vms.event_clips.domain import ClipStatus, EventClip
+from vms.event_clips.ffmpeg import render_freeze_frame_clip
 from vms.event_clips.repository import EventClipRepository, EventClipRepositoryPort
 from vms.events.images import SNAPSHOTS_DIR
 from vms.infrastructure.database import get_session_factory
@@ -91,7 +89,7 @@ class EventClipService:
         clip = await self._update_status_isolated(clip.id, ClipStatus.STAGED)
 
         try:
-            local_mp4 = await self._render_freeze_frame_clip(
+            local_mp4 = await render_freeze_frame_clip(
                 str(snapshot_file), duration_seconds=clip.duration_seconds
             )
         except Exception as exc:
@@ -174,31 +172,6 @@ class EventClipService:
             clip = await repo.update_status(clip_id, status, **fields)
             await session.commit()
             return clip
-
-    async def _render_freeze_frame_clip(self, image_path: str, duration_seconds: int) -> str:
-        """Gera um MP4 de `duration_seconds` a partir de uma imagem única, via ffmpeg."""
-        fd, output_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd)
-
-        cmd = [
-            "ffmpeg", "-y",
-            "-loop", "1",
-            "-i", image_path,
-            "-c:v", "libx264",
-            "-t", str(duration_seconds),
-            "-pix_fmt", "yuv420p",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            output_path,
-        ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            os.remove(output_path)
-            raise RuntimeError(f"ffmpeg falhou (código {proc.returncode}): {stderr.decode()[-500:]}")
-        return output_path
-
 
 def build_event_clip_service(session: AsyncSession) -> EventClipService:
     """Factory que constrói EventClipService com implementações concretas."""
