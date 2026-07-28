@@ -189,6 +189,7 @@ services:
       - NOTIFICATION_CHANNEL=${NOTIFICATION_CHANNEL:-whatsapp}
       - ARCANUM_BASE_URL=${ARCANUM_BASE_URL:-http://arcanum:3100}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_EVENT_CLIPS=${ENABLE_EVENT_CLIPS:-true}
     volumes:
       - snapshots:/snapshots
     depends_on:
