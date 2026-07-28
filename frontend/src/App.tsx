@@ -3,6 +3,7 @@ import { Toaster } from 'react-hot-toast'
 import { Layout } from '@/components/layout/Layout'
 import { useAuthStore } from '@/store/authStore'
 import { LicenseGate } from '@/components/license/LicenseGate'
+import { ForcePasswordChangeGate } from '@/components/auth/ForcePasswordChangeGate'
 
 import { LoginPage }           from '@/pages/LoginPage'
 import { DashboardPage }       from '@/pages/DashboardPage'
@@ -15,7 +16,6 @@ import { UsersPage }           from '@/pages/UsersPage'
 import { SettingsPage }        from '@/pages/SettingsPage'
 import { ReportsPage }         from '@/pages/ReportsPage'
 import { AuditPage }           from '@/pages/AuditPage'
-import { AgentsPage }          from '@/pages/AgentsPage'
 import { DetectionsPage }      from '@/pages/DetectionsPage'
 import { AnalyticsEventsPage }    from '@/pages/AnalyticsEventsPage'
 import { AnalyticsDashboardPage } from '@/pages/AnalyticsDashboardPage'
@@ -59,6 +59,7 @@ function RequireAdmin() {
 
 function AuthenticatedApp() {
   return (
+    <ForcePasswordChangeGate>
     <LicenseGate>
     <Routes>
       <Route element={<Layout />}>
@@ -72,7 +73,6 @@ function AuthenticatedApp() {
         <Route path="/contacts"      element={<ContactsPage />} />
         <Route path="/watchlist"     element={<WatchlistPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
-        <Route path="/agents"        element={<AgentsPage />} />
         <Route path="/reports"       element={<ReportsPage />} />
         <Route path="/audit"         element={<AuditPage />} />
         <Route path="/users"         element={<UsersPage />} />
@@ -91,6 +91,7 @@ function AuthenticatedApp() {
       </Route>
     </Routes>
     </LicenseGate>
+    </ForcePasswordChangeGate>
   )
 }
 

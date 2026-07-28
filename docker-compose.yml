@@ -320,6 +320,10 @@ services:
       # native_installer/windows/. Binário não vai pro git (veja .gitignore);
       # precisa ser gerado uma vez e colocado em release/ antes do deploy.
       - ./native_installer/windows/release:/usr/share/nginx/agent-downloads:ro
+      # Instalador Nível 1 (Docker dedicado) — ver Sprint 7,
+      # native_installer/windows-docker/. Só scripts + o compose file,
+      # nenhum binário — pode ir pro git direto.
+      - ./native_installer/windows-docker/release:/usr/share/nginx/agent-docker-downloads:ro
     depends_on:
       - api
       - frontend

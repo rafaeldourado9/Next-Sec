@@ -65,6 +65,7 @@ class User:
     full_name: str
     role: UserRole
     is_active: bool = True
+    must_change_password: bool = False
     created_at: datetime = field(default_factory=datetime.utcnow)
 
     def has_permission(self, required_role: UserRole) -> bool:

@@ -21,6 +21,10 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int = Field(description="Segundos até expiração do access token")
+    must_change_password: bool = Field(
+        default=False,
+        description="True se a senha ainda é a padrão gerada no onboarding — frontend deve forçar troca antes de liberar o app",
+    )
 
 
 class RefreshRequest(BaseModel):
@@ -96,6 +100,7 @@ class UserResponse(BaseModel):
     full_name: str
     role: str
     is_active: bool
+    must_change_password: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -107,6 +112,13 @@ class UpdateUserRequest(BaseModel):
     role: str | None = Field(default=None, pattern=r"^(admin|gestor|operador|operator|viewer)$")
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=8)
+
+
+class ChangePasswordRequest(BaseModel):
+    """Troca de senha auto-serviço — exige a senha atual."""
+
+    current_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=8)
 
 
 # ─── API Key ──────────────────────────────────────────────────────────────────

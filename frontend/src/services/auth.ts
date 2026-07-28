@@ -19,4 +19,11 @@ export const authService = {
     const res = await api.get<User>('/users/me', config)
     return res.data
   },
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await api.put('/auth/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    })
+  },
 }

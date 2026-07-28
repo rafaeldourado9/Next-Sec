@@ -58,6 +58,23 @@ export interface TenantUsage {
   analytics_map: Record<string, number>
 }
 
+export interface OnboardClientResult {
+  tenant: { id: string; name: string; slug: string }
+  gestor_email: string
+  gestor_default_password: string
+  license_key: string
+  agent: {
+    id: string
+    name: string
+    api_key: string
+    wg_private_key: string
+    wg_public_key_hub: string
+    wg_endpoint: string
+    wg_tunnel_ip: string
+    wg_allowed_ips: string
+  }
+}
+
 export const adminService = {
   // ── Tenants ────────────────────────────────────────────────────────────────
 
@@ -71,6 +88,17 @@ export const adminService = {
     gestor_password: string; cnpj?: string; pricing_plan_id?: string
   }): Promise<{ id: string; name: string; slug: string }> {
     const { data } = await api.post('/admin/tenants', body)
+    return data
+  },
+
+  // Onboarding de cliente Nível 1 (Docker dedicado) — cria tenant + gestor
+  // (senha padrão, troca obrigatória) + licença já ativa + agent com túnel
+  // WireGuard, tudo numa chamada só (ver Sprint 7 / docs/DEPLOY_EDGE.md).
+  async onboardClient(body: {
+    name: string; slug: string; gestor_email: string
+    gestor_name?: string; cnpj?: string; max_cameras?: number
+  }): Promise<OnboardClientResult> {
+    const { data } = await api.post('/admin/onboard-client', body)
     return data
   },
 

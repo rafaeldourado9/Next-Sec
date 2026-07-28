@@ -13,20 +13,62 @@ reintroduzido no futuro, a versão original está preservada em
 from __future__ import annotations
 
 import logging
+import secrets
+import string
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from vms.iam.models import TenantModel, UserModel
 from vms.audit.models import AuditLogModel
+from vms.billing.models import LicenseKeyModel
 from vms.cameras.models import CameraModel
+from vms.cameras.repository import AgentRepository, AgentTunnelRepository, CameraRepository
+from vms.cameras.service import AgentService
+from vms.cameras.wireguard_client import WireGuardHubClient
+from vms.iam.domain import UserRole
+from vms.iam.repository import ApiKeyRepository, TenantRepository, UserRepository
+from vms.iam.service import ApiKeyService, TenantService, UserService
 from vms.shared.api.dependencies import AdminUser, DbSession
 from vms.infrastructure.security import create_access_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+_LICENSE_KEY_ALPHABET = string.ascii_uppercase + string.digits
+_PASSWORD_ALPHABET = string.ascii_uppercase + string.ascii_lowercase + string.digits
+
+
+def _generate_license_key() -> str:
+    """Mesmo formato usado por `scripts/create_license.py` (XXXX-XXXXX-XXXXX-XXXXX-XXXXX)."""
+    groups = [4, 5, 5, 5, 5]
+    return "-".join(
+        "".join(secrets.choice(_LICENSE_KEY_ALPHABET) for _ in range(n)) for n in groups
+    )
+
+
+def _generate_default_password() -> str:
+    """Senha padrão legível (3 grupos de 4) — trocada obrigatoriamente no primeiro login."""
+    groups = [4, 4, 4]
+    return "-".join(
+        "".join(secrets.choice(_PASSWORD_ALPHABET) for _ in range(n)) for n in groups
+    )
+
+
+def _agent_svc(db: AsyncSession) -> AgentService:
+    """Mesma factory de `cameras/router.py::_agent_svc` — construída aqui também
+    porque o onboarding de cliente Nível 1 (`POST /admin/onboard-client`) precisa
+    do provisionamento de agent+túnel WireGuard, sem importar o router de câmeras."""
+    return AgentService(
+        AgentRepository(db),
+        CameraRepository(db),
+        ApiKeyService(ApiKeyRepository(db)),
+        AgentTunnelRepository(db),
+        WireGuardHubClient(),
+    )
 
 
 # ─── Tenants ──────────────────────────────────────────────────────────────────
@@ -114,6 +156,108 @@ async def create_tenant(body: dict, claims: AdminUser, db: DbSession) -> dict:
 
     logger.info("Admin %s criou tenant %s (%s)", claims.user_id, tenant.id, slug)
     return {"id": tenant.id, "name": tenant.name, "slug": tenant.slug, "is_active": tenant.is_active}
+
+
+@router.post(
+    "/onboard-client",
+    status_code=status.HTTP_201_CREATED,
+    summary="Onboarding de cliente Nível 1 (licença + tenant + agent Docker + túnel WireGuard)",
+)
+async def onboard_client(body: dict, claims: AdminUser, db: DbSession) -> dict:
+    """
+    Cria, numa tacada só, tudo que um cliente Nível 1 (Docker dedicado)
+    precisa pra começar: tenant, usuário gestor com senha padrão (troca
+    obrigatória no primeiro login — ver `must_change_password`), licença já
+    ativa (pula o fluxo manual de `POST /billing/activate`) e o agent com
+    túnel WireGuard provisionado (reaproveita `AgentService.
+    create_agent_with_tunnel`, mesmo código de `POST /agents`).
+
+    Retorna tudo — inclusive os segredos de uma vez só (senha padrão, API
+    key, chave privada WireGuard) — pro frontend montar o pacote de
+    instalação (.zip) sem nenhuma chamada adicional ao servidor com esses
+    segredos.
+    """
+    name = body.get("name", "").strip()
+    slug = body.get("slug", "").strip().lower()
+    cnpj = body.get("cnpj")
+    gestor_email = body.get("gestor_email", "").strip().lower()
+    gestor_name = body.get("gestor_name", "Gestor").strip()
+    max_cameras = int(body.get("max_cameras") or 0)
+
+    if not name or not slug or not gestor_email:
+        raise HTTPException(status_code=400, detail="name, slug e gestor_email são obrigatórios")
+
+    default_password = _generate_default_password()
+
+    tenant = await TenantService(TenantRepository(db)).create_tenant(name, slug)
+    if cnpj:
+        tenant_model = await db.get(TenantModel, tenant.id)
+        tenant_model.cnpj = cnpj
+
+    gestor = await UserService(UserRepository(db), TenantRepository(db)).create_user(
+        tenant_id=tenant.id,
+        email=gestor_email,
+        password=default_password,
+        full_name=gestor_name,
+        role=UserRole.GESTOR,
+        must_change_password=True,
+    )
+
+    license_key_value = _generate_license_key()
+    license_key = LicenseKeyModel(
+        license_key=license_key_value,
+        tenant_id=tenant.id,
+        status="active",
+        deployment_model="self_hosted",
+        max_cameras=max_cameras,
+        activated_at=datetime.now(UTC),
+    )
+    db.add(license_key)
+    await db.flush()
+
+    tenant_model = await db.get(TenantModel, tenant.id)
+    tenant_model.license_key_id = license_key.id
+    tenant_model.onboarding_complete = True
+
+    # Provisiona agent + túnel WireGuard — mesmo código de POST /agents
+    # (create_agent_with_tunnel já desfaz agent+api_key se o hub falhar).
+    bundle = await _agent_svc(db).create_agent_with_tunnel(tenant.id, name=f"{slug}-docker")
+
+    db.add(AuditLogModel(
+        tenant_id=tenant.id,
+        user_id=claims.user_id,
+        action="admin.client.onboarded",
+        resource_type="tenant",
+        resource_id=tenant.id,
+        payload={"name": name, "slug": slug, "gestor_email": gestor_email},
+    ))
+
+    # Commit explícito — o peer WG já foi registrado no hub como side-effect
+    # externo antes deste ponto (ver create_agent_with_tunnel), fora da
+    # transação SQL (mesmo padrão de POST /agents em cameras/router.py).
+    await db.commit()
+
+    logger.info(
+        "Admin %s fez onboarding do cliente '%s' (tenant=%s, gestor=%s, agent=%s)",
+        claims.user_id, slug, tenant.id, gestor.id, bundle.agent.id,
+    )
+
+    return {
+        "tenant": {"id": tenant.id, "name": name, "slug": slug},
+        "gestor_email": gestor_email,
+        "gestor_default_password": default_password,
+        "license_key": license_key_value,
+        "agent": {
+            "id": bundle.agent.id,
+            "name": bundle.agent.name,
+            "api_key": bundle.api_key,
+            "wg_private_key": bundle.wg_private_key,
+            "wg_public_key_hub": bundle.wg_public_key_hub,
+            "wg_endpoint": bundle.wg_endpoint,
+            "wg_tunnel_ip": bundle.wg_tunnel_ip,
+            "wg_allowed_ips": bundle.wg_allowed_ips,
+        },
+    }
 
 
 @router.get("/tenants/{tenant_id}", summary="Detalhe do tenant")

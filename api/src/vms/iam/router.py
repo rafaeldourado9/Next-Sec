@@ -9,6 +9,7 @@ from vms.infrastructure.middleware.audit_action import audit_action
 from vms.shared.api.rate_limit import limiter
 from vms.iam.repository import ApiKeyRepository, TenantRepository, UserRepository
 from vms.iam.schemas import (
+    ChangePasswordRequest,
     CreateTenantRequest,
     CreateUserRequest,
     LoginRequest,
@@ -68,13 +69,41 @@ async def login(request: Request, body: LoginRequest, db: DbSession) -> TokenRes
         raise AuthenticationError()
 
     svc = _make_auth_service(db)
-    access, refresh = await svc.authenticate_user(
+    access, refresh, must_change_password = await svc.authenticate_user(
         body.email, body.password, user_model.tenant_id
     )
     return TokenResponse(
         access_token=access,
         refresh_token=refresh,
         expires_in=settings.access_token_expire_minutes * 60,
+        must_change_password=must_change_password,
+    )
+
+
+@router.put(
+    "/auth/change-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Trocar a própria senha",
+    tags=["auth"],
+)
+@audit_action("user.password_changed", resource_type="user")
+async def change_password(
+    body: ChangePasswordRequest,
+    claims: CurrentUser,
+    db: DbSession,
+) -> None:
+    """
+    Troca a senha do usuário autenticado — exige a senha atual.
+
+    Sempre zera `must_change_password` (é a única saída da tela obrigatória
+    de troca de senha do onboarding — ver POST /admin/onboard-client).
+    """
+    svc = _make_user_service(db)
+    await svc.change_password(
+        user_id=claims.user_id,
+        tenant_id=claims.tenant_id,
+        current_password=body.current_password,
+        new_password=body.new_password,
     )
 
 
@@ -89,11 +118,12 @@ async def refresh_token(request: Request, body: RefreshRequest, db: DbSession) -
     """Renova access + refresh tokens a partir de um refresh token válido."""
     settings = get_settings()
     svc = _make_auth_service(db)
-    access, refresh = await svc.refresh_access_token(body.refresh_token)
+    access, refresh, must_change_password = await svc.refresh_access_token(body.refresh_token)
     return TokenResponse(
         access_token=access,
         refresh_token=refresh,
         expires_in=settings.access_token_expire_minutes * 60,
+        must_change_password=must_change_password,
     )
 
 
@@ -233,6 +263,7 @@ async def list_users(
             full_name=u.full_name,
             role=u.role,
             is_active=u.is_active,
+            must_change_password=u.must_change_password,
             created_at=u.created_at,
         )
         for u in users
@@ -256,6 +287,7 @@ async def get_me(claims: CurrentUser, db: DbSession) -> UserResponse:
         full_name=user.full_name,
         role=user.role,
         is_active=user.is_active,
+        must_change_password=user.must_change_password,
         created_at=user.created_at,
     )
 
@@ -290,6 +322,7 @@ async def create_user(
         full_name=user.full_name,
         role=user.role,
         is_active=user.is_active,
+        must_change_password=user.must_change_password,
         created_at=user.created_at,
     )
 
@@ -324,5 +357,6 @@ async def update_user(
         full_name=user.full_name,
         role=user.role,
         is_active=user.is_active,
+        must_change_password=user.must_change_password,
         created_at=user.created_at,
     )

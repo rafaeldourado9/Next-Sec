@@ -14,33 +14,65 @@ frontend/nginx/MinIO/Arcanum locais. Toda autenticação de negócio,
 notificação e storage final continuam na VPS central, acessada via túnel
 WireGuard.
 
-## 1. Pré-requisitos
+## 1. Pré-requisitos na máquina do cliente
 
-- Docker + Docker Compose no hardware do cliente.
-- Túnel WireGuard já configurado entre este hardware e o hub da VPS
-  central (peer deste cliente já provisionado — ver `infra/wireguard/` no
-  compose central).
-- Tenant e API key já criados na VPS central (tabela `api_keys`) — **cada
-  cliente Nível 1 tem sua própria key**, nunca reaproveitar a
-  `dev-analytics-key` do `.env.example` central.
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) instalado
+  (o instalador **não** instala isso sozinho — habilitar WSL2 pode exigir
+  reboot, risco grande demais pra fazer sem supervisão humana).
+- [WireGuard for Windows](https://www.wireguard.com/install/) instalado.
 
-## 2. Variáveis de ambiente
+## 2. Onboarding do cliente (Sprint 7 — via painel admin)
 
-Copiar `.env.edge.example` → `.env.edge` e preencher:
+Time Next Sec, logado como `admin`, em `/admin/tenants` → **"Novo Cliente
+(Nível 1 — Docker)"**. Preenche nome/slug/email do gestor e o sistema cria,
+numa chamada só (`POST /admin/onboard-client`):
 
-| Variável | Valor |
-|---|---|
-| `VMS_API_URL` | IP interno do hub WireGuard (sub-rede `WG_SUBNET`, default `10.60.0.0/24`) na porta da API central — **nunca** o IP público direto (porta 8000 não é exposta publicamente) |
-| `VMS_API_KEY` | API key deste tenant/agente, gerada na VPS central |
-| `ANALYTICS_TARGET` | `cpu` (default) ou `gpu` se o hardware do cliente tiver GPU NVIDIA + driver CUDA |
-| `ANALYTICS_FPS` / `YOLO_IMGSZ` / `YOLO_CONF` / `YOLO_MODEL_PATH` | ajustar conforme hardware/câmeras deste cliente (defaults iguais ao compose central) |
-| `FACE_RECOGNITION_MODEL_PATH` | vazio desabilita reconhecimento facial local (o gate de LGPD continua avaliado na VPS central) |
+- o tenant e o usuário gestor (**senha padrão gerada automaticamente** —
+  troca obrigatória no primeiro login, ver `must_change_password`)
+- a licença, já ativa (pula o fluxo manual de `POST /billing/activate`)
+- o agent + túnel WireGuard (mesmo provisionamento do Nível 2 — reaproveita
+  `AgentService.create_agent_with_tunnel`)
 
-`.env.edge` nunca vai pro git.
+A tela mostra, **uma única vez**: a chave de licença, o email/senha padrão
+do gestor, e um botão **"Baixar pacote completo (.zip)"** — contém
+`nextsec.conf` (WireGuard), `.env.edge` (`VMS_API_URL`/`VMS_API_KEY` já
+preenchidos) e o instalador (`docker-compose.edge.yml`, `INSTALAR.bat`,
+`install-docker.ps1`, `UNINSTALAR.bat`, `uninstall-docker.ps1` — servidos
+estáticos por `infra/nginx/nginx.conf`, `location /downloads/agent-docker/`,
+a partir de `native_installer/windows-docker/release/`).
 
-## 3. Subir a stack
+No hardware do cliente: extrair o `.zip` e dar duplo clique em
+`INSTALAR.bat` (auto-eleva via UAC).
+
+### O que o instalador faz
+
+1. Confere Docker Desktop e WireGuard instalados (aborta com instrução clara se algum faltar).
+2. Registra o túnel WireGuard (`nextsec-edge`).
+3. Copia `docker-compose.edge.yml` + `.env.edge` pra `%ProgramData%\NextSecEdge\`.
+4. Configura Docker Desktop para iniciar ao logar (via `HKCU\...\Run` — mecanismo padrão do Windows, não depende do formato interno do settings do Docker Desktop, que muda entre versões).
+5. **Pergunta** se deve configurar login automático do Windows nesta máquina — com aviso de segurança explícito antes (grava a senha da conta em texto plano no registro; **só faça isso numa máquina dedicada a este agent**). Ver "Trade-off de auto-start" abaixo.
+6. Registra uma Scheduled Task (`NextSecEdgeAutoStart`, trigger "At log on") que espera o Docker subir e roda `docker compose up -d`.
+7. Sobe a stack imediatamente (`docker compose up -d --build`), sem esperar o próximo boot.
+
+Para remover: `UNINSTALAR.bat` (derruba a stack, remove a Scheduled Task, o túnel, e opcionalmente reverte o login automático).
+
+### Trade-off de auto-start (decisão consciente, não um descuido)
+
+Docker Desktop no Windows é um app gráfico — não roda headless sem uma
+sessão de usuário logada. Pra a stack subir sozinha depois de um
+desligar/ligar real (sem alguém logar manualmente), a única forma prática
+hoje é: login automático do Windows + Docker Desktop iniciando ao logar +
+a Scheduled Task acima. O trade-off de segurança (senha em texto plano no
+registro, bypass da tela de login do Windows) é real e o instalador avisa
+antes de configurar — só faz sentido numa máquina 100% dedicada a este
+agent, nunca num PC de uso geral do cliente.
+
+## 3. Modo manual (dev/debug — sem o instalador)
+
+Útil pra testar mudanças no compose sem gerar um pacote completo:
 
 ```bash
+cp .env.edge.example .env.edge   # preencher VMS_API_URL/VMS_API_KEY na mão
 docker compose -f docker-compose.edge.yml --env-file .env.edge up -d --build
 docker compose -f docker-compose.edge.yml ps   # todos devem ficar "healthy"
 ```
@@ -77,7 +109,8 @@ internet.
 `entrypoint.sh` da imagem resolve o placeholder `__VMS_HOOKS_BASE_URL__`
 no start do container a partir da env `VMS_HOOKS_BASE_URL`, que este
 compose já define como o mesmo valor de `VMS_API_URL` (a VPS central via o
-túnel WireGuard). Nada a configurar aqui além do que já está na seção 2.
+túnel WireGuard). Nada a configurar aqui além do que já está no pacote de
+onboarding.
 
 ## 6. Teste E2E real (worker gera um clipe de verdade)
 
@@ -108,6 +141,12 @@ logs do worker/mock se o clipe não chegar dentro do timeout.
   que é o que a VMS usa pra ordenar a timeline (não a ordem de chegada).
   Perda/duplicação, sim, seriam bugs reais — cobertos pelo mesmo teste
   acima.
+- **Instalador Nível 1 nunca testado numa máquina Windows cliente real** —
+  validado nesta sessão via parse do PowerShell + confirmação de que os
+  cmdlets (`Register-ScheduledTask` etc.) existem; o registro de Scheduled
+  Task/login automático de ponta a ponta ainda precisa de verificação
+  manual num cliente/VM Windows de teste antes do primeiro deploy real
+  (ver Sprint 7).
 
 ## Progresso (Sprint 6)
 
@@ -122,3 +161,16 @@ logs do worker/mock se o clipe não chegar dentro do timeout.
 - [x] S6-07 Este documento + progress/state atualizados
 - [x] Pós-S6-07: `mediamtx.yml` parametrizado (era limitação conhecida) +
       `e2e-test-edge.sh` (worker gera clipe real via ffmpeg na stack viva)
+
+## Progresso (Sprint 7 — Onboarding por licença + instalador único Nível 1)
+
+- [x] `must_change_password` (migration + login + `PUT /auth/change-password`)
+- [x] `POST /admin/onboard-client` (tenant + gestor + licença + agent/túnel WG)
+- [x] `AgentsPage.tsx` removida — criação de agent nativo (Nível 2) fica sem
+      caminho de dashboard por enquanto (decisão explícita, não prioridade)
+- [x] Onboarding + download do pacote em `TenantsPage.tsx` (admin)
+- [x] `ForcePasswordChangeGate.tsx` — bloqueia o app até a troca de senha
+- [x] `native_installer/windows-docker/` — instalador Nível 1 completo
+      (Docker Desktop + WireGuard + Scheduled Task de auto-start + login
+      automático opcional, com aviso de segurança)
+- [x] `infra/nginx/nginx.conf` — `location /downloads/agent-docker/`

@@ -25,6 +25,8 @@ from vms.events.models import VmsEventModel  # noqa: F401
 from vms.notifications.models import NotificationRuleModel, NotificationLogModel  # noqa: F401
 from vms.watchlist.models import FaceProfileModel  # noqa: F401
 from vms.event_clips.models import EventClipModel  # noqa: F401
+from vms.audit.models import AuditLogModel  # noqa: F401
+from vms.billing.models import LicenseKeyModel  # noqa: F401
 
 
 @pytest_asyncio.fixture

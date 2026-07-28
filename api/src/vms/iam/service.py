@@ -66,6 +66,7 @@ class UserService:
         password: str,
         full_name: str,
         role: UserRole = UserRole.VIEWER,
+        must_change_password: bool = False,
     ) -> User:
         """
         Cria usuário no tenant.
@@ -88,8 +89,40 @@ class UserService:
             hashed_password=hash_password(password),
             full_name=full_name,
             role=role,
+            must_change_password=must_change_password,
         )
         return await self._users.create(user)
+
+    async def change_password(
+        self,
+        user_id: str,
+        tenant_id: str,
+        current_password: str,
+        new_password: str,
+    ) -> User:
+        """
+        Troca a senha do próprio usuário — exige a senha atual e sempre
+        zera `must_change_password` (é o único jeito de sair da tela
+        obrigatória de troca de senha do onboarding — ver
+        POST /admin/onboard-client).
+
+        Lança NotFoundError se o usuário não existir, AuthenticationError
+        se a senha atual não bater.
+        """
+        user = await self._users.get_by_id(user_id, tenant_id)
+        if not user:
+            raise NotFoundError("Usuário", user_id)
+        if not verify_password(current_password, user.hashed_password):
+            raise AuthenticationError("Senha atual incorreta")
+
+        updated = await self._users.patch(
+            user_id,
+            tenant_id,
+            hashed_password=hash_password(new_password),
+            must_change_password=False,
+        )
+        assert updated is not None
+        return updated
 
     async def get_user(self, user_id: str, tenant_id: str) -> User:
         """Retorna usuário por ID dentro do tenant."""
@@ -138,9 +171,9 @@ class AuthService:
         email: str,
         password: str,
         tenant_id: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, bool]:
         """
-        Autentica usuário e retorna (access_token, refresh_token).
+        Autentica usuário e retorna (access_token, refresh_token, must_change_password).
 
         Lança UnauthorizedError se credenciais inválidas.
         """
@@ -153,12 +186,13 @@ class AuthService:
 
         access = create_access_token(user.id, user.tenant_id, user.role.value)
         refresh = create_refresh_token(user.id, user.tenant_id)
-        return access, refresh
+        return access, refresh, user.must_change_password
 
-    async def refresh_access_token(self, refresh_token: str) -> tuple[str, str]:
+    async def refresh_access_token(self, refresh_token: str) -> tuple[str, str, bool]:
         """
         Renova tokens a partir de um refresh token válido.
 
+        Retorna (access_token, refresh_token, must_change_password).
         Lança UnauthorizedError se o refresh token for inválido.
         """
         try:
@@ -172,7 +206,7 @@ class AuthService:
 
             access = create_access_token(user.id, user.tenant_id, user.role.value)
             new_refresh = create_refresh_token(user.id, user.tenant_id)
-            return access, new_refresh
+            return access, new_refresh, user.must_change_password
 
         except KeyError as exc:
             raise AuthenticationError("Claims do token ausentes") from exc

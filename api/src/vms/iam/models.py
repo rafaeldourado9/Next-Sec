@@ -63,6 +63,10 @@ class UserModel(Base):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="viewer")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Onboarding por licença (Sprint 7): usuário criado com senha padrão
+    # gerada pelo admin precisa trocá-la no primeiro login — ver
+    # POST /admin/onboard-client e PUT /auth/change-password.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

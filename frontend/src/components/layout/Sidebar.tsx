@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Cctv,
   Bell, Users, Settings,
   ChevronLeft, ChevronRight, LogOut,
-  FileText, ClipboardList, Bot,
+  FileText, ClipboardList,
   ScanLine, Activity, LineChart,
   Building2, ShieldCheck, Phone, ScanFace,
 } from 'lucide-react'
@@ -46,7 +46,6 @@ const NAV_SECTIONS: NavSection[] = [
       { to: '/lgpd',           icon: ShieldCheck,      label: 'LGPD' },
       { to: '/contacts',       icon: Phone,           label: 'Contatos' },
       { to: '/notifications',  icon: Bell,            label: 'Notificações' },
-      { to: '/agents',         icon: Bot,             label: 'Agentes',       adminOnly: true },
       { to: '/users',          icon: Users,           label: 'Usuários',      adminOnly: true },
     ],
   },

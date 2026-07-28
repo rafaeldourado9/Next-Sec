@@ -65,6 +65,7 @@ def _user_to_domain(m: UserModel) -> User:
         full_name=m.full_name,
         role=UserRole(m.role),
         is_active=m.is_active,
+        must_change_password=m.must_change_password,
         created_at=m.created_at,
     )
 
@@ -156,6 +157,7 @@ class UserRepository:
             full_name=user.full_name,
             role=user.role.value,
             is_active=user.is_active,
+            must_change_password=user.must_change_password,
         )
         self._session.add(model)
         await self._session.flush()

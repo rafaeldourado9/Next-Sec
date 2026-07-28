@@ -358,7 +358,7 @@ export function AddCameraWizard({ open, onClose, onCreated, defaultProtocol }: A
             </p>
             {agents.length === 0 && (
               <p className="text-xs mt-1 flex items-center gap-1" style={{ color: 'var(--danger)' }}>
-                <AlertTriangle size={11} />Nenhum agent cadastrado ainda — crie um em Agents antes de continuar.
+                <AlertTriangle size={11} />Nenhum agent cadastrado ainda — fale com o suporte para provisionar um.
               </p>
             )}
           </div>
