@@ -41,19 +41,17 @@
 #   - edge-agent       → é o caminho de Nível 2 (agent nativo sem Docker,
 #                        ADR-016) — fora de escopo aqui
 #
-# LIMITAÇÃO CONHECIDA (não resolvida neste sprint — ver S6-05, fora do
-# escopo travado da task): `infra/mediamtx/mediamtx.yml` tem
+# LIMITAÇÃO RESOLVIDA (era conhecida desde S6-05, corrigida na
+# continuação do S6-06): `infra/mediamtx/mediamtx.yml` tinha
 # `authHTTPAddress` e os hooks `runOnReady`/`runOnNotReady`/
-# `runOnRecordSegmentComplete` hardcoded para `http://api:8000`, que só
-# resolve dentro da rede do `docker-compose.yml` central (onde existe um
-# container chamado `api`). Neste compose de edge não há `api` local por
-# desenho (ADR-017 §3) — esses hooks precisam apontar para a VPS central
-# via o mesmo túnel WireGuard que `VMS_API_URL` usa. Corrigir isso exige
-# tornar `mediamtx.yml` parametrizável (env var ou templating no
-# entrypoint), o que é uma mudança em `infra/mediamtx/`, fora do escopo
-# desta task (que só pedia reempacotar o compose, não alterar a lógica dos
-# serviços). Registrar como gap a resolver antes de um deploy real em
-# cliente Nível 1.
+# `runOnRecordSegmentComplete` hardcoded para `http://api:8000` — só
+# resolvia dentro da rede do `docker-compose.yml` central. Agora o arquivo
+# é um TEMPLATE (placeholder `__VMS_HOOKS_BASE_URL__`), renderizado pelo
+# `entrypoint.sh` da imagem no start do container a partir da env
+# `VMS_HOOKS_BASE_URL` (aqui, o mesmo valor de `VMS_API_URL` — a VPS
+# central via o túnel WireGuard). Ver `infra/mediamtx/entrypoint.sh` e o
+# comentário em `infra/mediamtx/mediamtx.yml` (por que não deu pra usar o
+# override nativo via env var `MTX_*` do MediaMTX para os 3 hooks).
 # ─────────────────────────────────────────────────────────────────────────
 
 services:
@@ -99,8 +97,15 @@ services:
     ports:
       - "8554:8554"   # RTSP
       - "1935:1935"   # RTMP (push das câmeras/agent do cliente)
+    environment:
+      # Base URL do publish-auth + hooks on_ready/on_not_ready/
+      # on_record_segment_complete (ver entrypoint.sh/mediamtx.yml) — aqui,
+      # a VPS central via o mesmo túnel WireGuard que `VMS_API_URL` usa
+      # (mesmo valor, não existe `api` local neste compose — ver ADR-017 §3).
+      # Corrige a limitação conhecida documentada até aqui (S6-05/S6-06).
+      - VMS_HOOKS_BASE_URL=${VMS_API_URL:?defina VMS_API_URL (endereço da VPS central via WireGuard) em .env.edge}
     volumes:
-      - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+      - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml.template:ro
       - recordings:/recordings
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9997/v3/config/global/get"]

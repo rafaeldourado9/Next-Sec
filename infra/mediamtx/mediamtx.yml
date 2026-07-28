@@ -19,7 +19,17 @@ udpMaxPayloadSize: 1472
 # Read (HLS / WebRTC viewers) → validado pelo VMS via token query param
 
 authMethod: http
-authHTTPAddress: http://api:8000/streaming/publish-auth
+# __VMS_HOOKS_BASE_URL__ é substituído por /entrypoint.sh no start do
+# container (ver Dockerfile) — MediaMTX não aplica override via env var
+# (MTX_*) a este campo* nem aos runOnReady/runOnNotReady/
+# runOnRecordSegmentComplete abaixo (*na verdade MTX_AUTHHTTPADDRESS até
+# funciona sozinho, mas os 3 hooks não — confirmado empiricamente; usamos o
+# mesmo mecanismo de template nos 4 lugares por consistência, em vez de
+# misturar dois jeitos diferentes de configurar a mesma base URL). Central:
+# `http://api:8000` (mesma rede Docker). Edge Nível 1: endereço da VPS
+# central via túnel WireGuard — mesmo valor de VMS_API_URL (ver
+# docker-compose.edge.yml e docs/DEPLOY_EDGE.md).
+authHTTPAddress: __VMS_HOOKS_BASE_URL__/streaming/publish-auth
 
 # Leitura requer validação de viewer token
 # MediaMTX ≥ 1.3: usar authHTTPAddress para publish + read
@@ -146,14 +156,14 @@ pathDefaults:
   runOnReady: >-
     wget -qO- --header="Content-Type: application/json"
     --post-data="{\"path\":\"$MTX_PATH\",\"source_type\":\"$MTX_SOURCE_TYPE\",\"source_id\":\"$MTX_SOURCE_ID\"}"
-    http://api:8000/api/v1/webhooks/mediamtx/on_ready
+    __VMS_HOOKS_BASE_URL__/api/v1/webhooks/mediamtx/on_ready
   runOnReadyRestart: no
 
   # on_not_ready: câmera ficou offline → VMS marca camera.is_online = False
   runOnNotReady: >-
     wget -qO- --header="Content-Type: application/json"
     --post-data="{\"path\":\"$MTX_PATH\",\"source_type\":\"$MTX_SOURCE_TYPE\",\"source_id\":\"$MTX_SOURCE_ID\"}"
-    http://api:8000/api/v1/webhooks/mediamtx/on_not_ready
+    __VMS_HOOKS_BASE_URL__/api/v1/webhooks/mediamtx/on_not_ready
 
   # on_read: viewer conectou — para métricas de audiência (opcional)
   runOnRead: ""
@@ -166,7 +176,7 @@ pathDefaults:
   runOnRecordSegmentComplete: >-
     wget -qO- --header="Content-Type: application/json"
     --post-data="{\"path\":\"$MTX_PATH\",\"segment_path\":\"$MTX_SEGMENT_PATH\"}"
-    http://api:8000/api/v1/webhooks/mediamtx/on_record_segment_complete
+    __VMS_HOOKS_BASE_URL__/api/v1/webhooks/mediamtx/on_record_segment_complete
 
 # ─── Paths estáticos ──────────────────────────────────────────────────────────
 # Câmeras adicionadas dinamicamente pelo cameras/mediamtx.py via API v3.

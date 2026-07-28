@@ -69,8 +69,13 @@ services:
     ports:
       - "8554:8554"   # RTSP
       - "1935:1935"   # RTMP (push do edge agent)
+    environment:
+      # Base URL do publish-auth + hooks on_ready/on_not_ready/
+      # on_record_segment_complete (ver entrypoint.sh/mediamtx.yml) — aqui,
+      # mesma rede Docker do serviço `api`.
+      - VMS_HOOKS_BASE_URL=http://api:8000
     volumes:
-      - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+      - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml.template:ro
       - recordings:/recordings
     healthcheck:
       # curl não existe nesta imagem (ver infra/mediamtx/Dockerfile) — só
