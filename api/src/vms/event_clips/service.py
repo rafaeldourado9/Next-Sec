@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vms.event_clips.domain import ClipStatus, EventClip
 from vms.event_clips.repository import EventClipRepository, EventClipRepositoryPort
 from vms.events.images import SNAPSHOTS_DIR
+from vms.infrastructure.database import get_session_factory
 from vms.infrastructure.storage_provider import StorageProvider, build_storage_provider
 from vms.shared.exceptions import NotFoundError
 
@@ -55,6 +56,15 @@ class EventClipService:
 
         Idempotente: se já existe um clipe para este evento, retorna o existente
         em vez de gerar de novo (evita duplicar upload em caso de retry).
+
+        Usa sessões de banco curtas e independentes da `self._session` injetada
+        (commitadas/fechadas logo após cada leitura/escrita), em vez de manter
+        uma única transação aberta do início ao fim: o ffmpeg + upload pro
+        storage são a parte lenta e não devem segurar uma conexão do pool
+        (só 10 no worker) presa em "idle in transaction" por toda a duração —
+        foi exatamente isso que já causou vazamento de pool/memória uma vez
+        (ver ADR-015, addendum) num ponto próximo (notifications), sob rajada
+        de eventos.
         """
         existing = await self._clips.get_by_event(vms_event_id)
         if existing:
@@ -63,21 +73,24 @@ class EventClipService:
         clip = await self._clips.create(
             EventClip(id=str(uuid.uuid4()), vms_event_id=vms_event_id)
         )
+        await self._session.commit()
 
         if not image_path:
-            return await self._clips.update_status(
-                clip.id, ClipStatus.FAILED, error_message="Evento sem snapshot — nada para gerar"
+            return await self._update_status_isolated(
+                clip.id, ClipStatus.FAILED,
+                error_message="Evento sem snapshot — nada para gerar",
             )
 
         snapshot_file = SNAPSHOTS_DIR / image_path
         if not snapshot_file.is_file():
-            return await self._clips.update_status(
+            return await self._update_status_isolated(
                 clip.id, ClipStatus.FAILED,
                 error_message=f"Snapshot não encontrado em disco: {image_path}",
             )
 
+        clip = await self._update_status_isolated(clip.id, ClipStatus.STAGED)
+
         try:
-            clip = await self._clips.update_status(clip.id, ClipStatus.STAGED)
             local_mp4 = await self._render_freeze_frame_clip(
                 str(snapshot_file), duration_seconds=clip.duration_seconds
             )
@@ -87,14 +100,28 @@ class EventClipService:
             finally:
                 os.remove(local_mp4)
 
-            return await self._clips.update_status(
+            return await self._update_status_isolated(
                 clip.id, ClipStatus.UPLOADED, storage_ref=key, storage_url=url
             )
         except Exception as exc:
             logger.exception("Falha ao gerar/enviar clipe do evento %s", vms_event_id)
-            return await self._clips.update_status(
+            return await self._update_status_isolated(
                 clip.id, ClipStatus.FAILED, error_message=str(exc)[:1000]
             )
+
+    async def _update_status_isolated(
+        self, clip_id: str, status: ClipStatus, **fields: object
+    ) -> EventClip:
+        """Atualiza o status do clipe numa sessão própria, curta, commitada e
+        fechada na hora — não usa `self._session`/`self._clips` de propósito,
+        pra não reter a conexão do chamador (`task_dispatch_event_notifications`)
+        presa durante o ffmpeg/upload que roda entre as chamadas."""
+        factory = get_session_factory()
+        async with factory() as session:
+            repo = EventClipRepository(session)
+            clip = await repo.update_status(clip_id, status, **fields)
+            await session.commit()
+            return clip
 
     async def _render_freeze_frame_clip(self, image_path: str, duration_seconds: int) -> str:
         """Gera um MP4 de `duration_seconds` a partir de uma imagem única, via ffmpeg."""

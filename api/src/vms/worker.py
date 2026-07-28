@@ -154,7 +154,14 @@ class WorkerSettings:
         arq.cron(task_cleanup_old_clips, hour=3, minute=30),
         arq.cron(task_prune_recording_windows, hour=3, minute=45),
     ]
-    max_jobs = 50
+    # Antes 50: numa VPS de 2 vCPU compartilhada, isso deixava rodar até 50
+    # jobs concorrentes (cada `task_dispatch_event_notifications` pode disparar
+    # ffmpeg pra gerar o clipe) contra um pool de só 10 conexões de banco —
+    # sob rajada de eventos, o ffmpeg fica CPU-starved e mais lento, prendendo
+    # sessões por mais tempo, o que derrubou a VPS de novo mesmo depois do
+    # fix de c3efe4d (ver ADR-015, addendum). 10 alinha com o tamanho real do
+    # pool de conexões do worker.
+    max_jobs = 10
     job_timeout = 300
 
 
