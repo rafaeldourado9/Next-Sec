@@ -24,6 +24,7 @@ interface CreateCameraData {
   onvif_url?: string
   onvif_username?: string
   onvif_password?: string
+  agent_id?: string
 }
 
 interface UpdateCameraData {
@@ -100,12 +101,12 @@ export const camerasService = {
     return res.data
   },
 
-  async onvifProbe(data: { onvif_url: string; username: string; password: string }): Promise<unknown> {
+  async onvifProbe(data: { onvif_url: string; username: string; password: string; agent_id?: string }): Promise<unknown> {
     const res = await api.post('/cameras/onvif-probe', data)
     return res.data
   },
 
-  async discover(data: { subnet?: string }): Promise<DiscoverOnvifResponse> {
+  async discover(data: { subnet?: string; agent_id?: string }): Promise<DiscoverOnvifResponse> {
     const res = await api.post<DiscoverOnvifResponse>('/cameras/discover', data)
     return res.data
   },

@@ -184,6 +184,13 @@ class OnvifProbeRequest(BaseModel):
     onvif_url: str = Field(..., min_length=7, max_length=2000)
     username: str = Field(..., min_length=1, max_length=255)
     password: str = Field(..., min_length=1, max_length=500)
+    agent_id: str | None = Field(
+        default=None,
+        description="Se informado, o probe roda no agent (dentro da LAN do "
+        "cliente) em vez de direto da API — necessário sempre que a câmera "
+        "está atrás de CGNAT/NAT, já que a API na nuvem não alcança IPs de "
+        "rede local.",
+    )
 
 
 class OnvifProbeResponse(BaseModel):
@@ -205,6 +212,11 @@ class DiscoverOnvifRequest(BaseModel):
         description="Subnet CIDR para busca (ex: 192.168.1.0/24). Sem este campo usa broadcast.",
     )
     timeout_seconds: int = Field(default=3, ge=1, le=10)
+    agent_id: str | None = Field(
+        default=None,
+        description="Se informado, o discovery roda no agent (dentro da LAN "
+        "do cliente) em vez de direto da API — mesma razão do OnvifProbeRequest.",
+    )
 
 
 class DiscoveredCamera(BaseModel):

@@ -24,10 +24,10 @@ export interface ConnectionTestResult {
 export function useConnectionTest() {
   const [result, setResult] = useState<ConnectionTestResult>({ status: 'idle' })
 
-  async function testOnvif(onvif_url: string, username: string, password: string) {
+  async function testOnvif(onvif_url: string, username: string, password: string, agent_id?: string) {
     setResult({ status: 'loading' })
     try {
-      const data = await camerasSvc.onvifProbe({ onvif_url, username, password }) as OnvifProbeResponse
+      const data = await camerasSvc.onvifProbe({ onvif_url, username, password, agent_id }) as OnvifProbeResponse
       if (data.reachable && data.rtsp_url) {
         setResult({
           status: 'ok',

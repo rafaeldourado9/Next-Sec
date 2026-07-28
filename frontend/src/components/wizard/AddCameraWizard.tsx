@@ -8,6 +8,7 @@ import { Modal } from '@/components/ui/Modal'
 import { Spinner } from '@/components/ui/Spinner'
 import { useConnectionTest } from '@/hooks/useConnectionTest'
 import { camerasService as camerasSvc, type DiscoveredCamera } from '@/services/cameras'
+import { agentsService, type Agent } from '@/services/agents'
 import type { StreamQuality } from '@/types'
 
 type Protocol = 'rtmp_push' | 'onvif' | 'manual'
@@ -46,6 +47,7 @@ const INITIAL_FORM = {
   retention_days: 5, stream_quality: 'high' as StreamQuality,
   onvif_ip: '', onvif_port: '80', onvif_username: 'admin', onvif_password: '',
   manual_url: '',
+  agent_id: '',
   ia_enabled: false,
   ptz_supported: false,
   latitude: '',
@@ -86,8 +88,23 @@ export function AddCameraWizard({ open, onClose, onCreated, defaultProtocol }: A
   const [discovered, setDiscovered]     = useState<DiscoveredCamera[]>([])
 
   const [form, setForm] = useState(INITIAL_FORM)
+  const [agents, setAgents] = useState<Agent[]>([])
 
   const { result: connTest, testOnvif, reset: resetTest } = useConnectionTest()
+
+  // Agent é obrigatório pra ONVIF/discovery (a API na nuvem não alcança a
+  // LAN do cliente atrás de CGNAT — quem faz o probe é o agent) e também
+  // pra qualquer stream funcionar de verdade (StreamManager do agent só
+  // puxa RTSP das câmeras vinculadas a ele via /agents/me/config).
+  useEffect(() => {
+    if (!open) return
+    agentsService.list()
+      .then((list) => {
+        setAgents(list)
+        if (list.length === 1) f('agent_id', list[0].id)
+      })
+      .catch(() => setAgents([]))
+  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const isLast = step === STEPS.length - 1 && !done
 
@@ -133,7 +150,7 @@ export function AddCameraWizard({ open, onClose, onCreated, defaultProtocol }: A
   const canProceed = () => {
     if (done) return true
     if (step === 1) {
-      if (protocol === 'onvif')  return !!form.onvif_ip && !!form.onvif_password
+      if (protocol === 'onvif')  return !!form.onvif_ip && !!form.onvif_password && !!form.agent_id
       if (protocol === 'manual') return /^(rtsp|rtmp|http|https):\/\/.+/.test(form.manual_url)
     }
     if (step === 2) return form.name.trim().length >= 2
@@ -163,6 +180,7 @@ export function AddCameraWizard({ open, onClose, onCreated, defaultProtocol }: A
         ptz_supported:    form.ptz_supported,
         latitude:         lat,
         longitude:        lng,
+        agent_id:         form.agent_id || undefined,
       })
 
       let rtmpInfo: { rtmp_url?: string; stream_key?: string } = {}
@@ -185,7 +203,7 @@ export function AddCameraWizard({ open, onClose, onCreated, defaultProtocol }: A
     setScanning(true)
     setDiscovered([])
     try {
-      const result = await camerasSvc.discover({ subnet: scanSubnet.trim() || undefined })
+      const result = await camerasSvc.discover({ subnet: scanSubnet.trim() || undefined, agent_id: form.agent_id || undefined })
       setDiscovered(result.cameras ?? [])
     } catch { /* ignore */ } finally {
       setScanning(false)
@@ -319,6 +337,32 @@ export function AddCameraWizard({ open, onClose, onCreated, defaultProtocol }: A
       {/* ── Step 1: Conexão ── */}
       {!done && step === 1 && (
         <div className="space-y-4">
+          <div>
+            <label className="label">
+              Agent {protocol === 'onvif' && <span style={{ color: 'var(--danger)' }}>*</span>}
+            </label>
+            <select
+              className="input"
+              value={form.agent_id}
+              onChange={(e) => f('agent_id', e.target.value)}
+            >
+              <option value="">— Selecione —</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>{a.name} {a.status === 'online' ? '(online)' : `(${a.status})`}</option>
+              ))}
+            </select>
+            <p className="text-xs text-t3 mt-1">
+              {protocol === 'onvif'
+                ? 'Obrigatório: a busca/probe ONVIF roda dentro da rede do agent — a nuvem não alcança um IP local (192.168.x.x) atrás de CGNAT.'
+                : 'Quem vai capturar o RTSP e enviar pro sistema. Sem isso a câmera fica cadastrada mas nenhum agent puxa o stream dela.'}
+            </p>
+            {agents.length === 0 && (
+              <p className="text-xs mt-1 flex items-center gap-1" style={{ color: 'var(--danger)' }}>
+                <AlertTriangle size={11} />Nenhum agent cadastrado ainda — crie um em Agents antes de continuar.
+              </p>
+            )}
+          </div>
+
           {protocol === 'rtmp_push' && (
             <div className="rounded-lg p-4 text-sm text-t2 space-y-1" style={{ background: 'var(--elevated)' }}>
               <p className="font-medium text-t1">Stream via RTMP Push</p>
@@ -412,8 +456,8 @@ export function AddCameraWizard({ open, onClose, onCreated, defaultProtocol }: A
               </div>
               <button
                 className="btn btn-ghost w-full text-sm"
-                onClick={() => testOnvif(`http://${form.onvif_ip}:${form.onvif_port}/onvif/device_service`, form.onvif_username, form.onvif_password)}
-                disabled={!form.onvif_ip || !form.onvif_password || connTest.status === 'loading'}
+                onClick={() => testOnvif(`http://${form.onvif_ip}:${form.onvif_port}/onvif/device_service`, form.onvif_username, form.onvif_password, form.agent_id || undefined)}
+                disabled={!form.onvif_ip || !form.onvif_password || !form.agent_id || connTest.status === 'loading'}
               >
                 {connTest.status === 'loading' ? <Spinner size="sm" /> : <><Search size={14} className="mr-1" />Descobrir câmera</>}
               </button>

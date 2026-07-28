@@ -19,6 +19,45 @@ from fastapi import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Futures de comandos agent->API pendentes de resposta, chaveados por
+# request_id. Processo único (deploy tier micro, um container `api` só) —
+# um dict em memória de processo é suficiente, não precisa de Redis/pubsub
+# pra correlacionar a resposta (usa Redis só pra levar o comando até o
+# agent, que é quem já está inscrito nesse canal via WS).
+_pending_agent_requests: dict[str, asyncio.Future] = {}
+
+
+async def _send_agent_command(agent_id: str, command: dict, timeout: float = 8.0) -> dict | None:
+    """Publica um comando pro agent via o mesmo canal Redis do config push e
+    aguarda a resposta correlacionada (request_id) vinda pelo WS. Usado para
+    operações que só fazem sentido rodando dentro da LAN do cliente (probe/
+    discover ONVIF) — a API na nuvem nunca alcança um IP de rede local
+    atrás de CGNAT, então quem executa é o agent, que já está lá."""
+    import uuid
+    from vms.infrastructure.config import get_settings
+    import redis.asyncio as aioredis
+
+    request_id = str(uuid.uuid4())
+    command = {**command, "request_id": request_id}
+
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+    _pending_agent_requests[request_id] = future
+    try:
+        settings = get_settings()
+        redis_client = aioredis.from_url(settings.redis_url)
+        try:
+            await redis_client.publish(f"agent:{agent_id}:config", json.dumps(command))
+        finally:
+            await redis_client.aclose()
+
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+    finally:
+        _pending_agent_requests.pop(request_id, None)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vms.cameras.repository import AgentRepository, AgentTunnelRepository, CameraRepository
@@ -370,7 +409,29 @@ async def onvif_probe(
     claims: CurrentUser,
     db: DbSession,
 ) -> OnvifProbeResponse:
-    """Faz probe ONVIF e retorna capacidades da câmera."""
+    """Faz probe ONVIF e retorna capacidades da câmera.
+
+    Se `agent_id` for informado, o probe roda no agent (dentro da LAN do
+    cliente) — a API na nuvem nunca alcança um IP de rede local atrás de
+    CGNAT (ver docs/ESTUDO_TECNICO_NEXT_SEC.md, seção 4)."""
+    if body.agent_id:
+        result_data = await _send_agent_command(body.agent_id, {
+            "type": "onvif_probe_request",
+            "onvif_url": body.onvif_url,
+            "username": body.username,
+            "password": body.password,
+        })
+        if result_data is None:
+            return OnvifProbeResponse(reachable=False, error="Agent não respondeu (offline ou timeout)")
+        return OnvifProbeResponse(
+            reachable=result_data.get("reachable", False),
+            manufacturer=result_data.get("manufacturer"),
+            model=result_data.get("model"),
+            rtsp_url=result_data.get("rtsp_url"),
+            snapshot_url=result_data.get("snapshot_url"),
+            error=result_data.get("error"),
+        )
+
     svc = _camera_svc(db)
     result = await svc.onvif_probe(body.onvif_url, body.username, body.password)
     return OnvifProbeResponse(
@@ -394,10 +455,26 @@ async def discover_cameras(
     claims: CurrentUser,
     db: DbSession,
 ) -> DiscoverOnvifResponse:
-    """WS-Discovery de câmeras ONVIF na rede local."""
+    """WS-Discovery de câmeras ONVIF na rede local.
+
+    Se `agent_id` for informado, o discovery roda no agent (dentro da LAN
+    do cliente) — broadcast multicast não atravessa a internet, só faz
+    sentido rodar de dentro da rede onde as câmeras estão."""
+    start = time.monotonic()
+
+    if body.agent_id:
+        result_data = await _send_agent_command(
+            body.agent_id,
+            {"type": "onvif_discover_request", "timeout_seconds": body.timeout_seconds},
+            timeout=body.timeout_seconds + 5.0,
+        )
+        duration_ms = int((time.monotonic() - start) * 1000)
+        raw = (result_data or {}).get("cameras", [])
+        cameras = [DiscoveredCamera(onvif_url=c["onvif_url"], ip=c["ip"]) for c in raw]
+        return DiscoverOnvifResponse(cameras=cameras, duration_ms=duration_ms)
+
     from vms.cameras.onvif_client import OnvifClient
 
-    start = time.monotonic()
     raw = await OnvifClient.discover(timeout_seconds=body.timeout_seconds)
     duration_ms = int((time.monotonic() - start) * 1000)
     cameras = [DiscoveredCamera(onvif_url=c["onvif_url"], ip=c["ip"]) for c in raw]
@@ -650,10 +727,20 @@ async def agent_ws(
         logger.info("Agent %s conectado via WebSocket (tenant=%s)", agent_id, tenant_id)
 
         async def _receive_ws() -> None:
-            """Aguarda desconexão do client."""
+            """Aguarda desconexão do client e roteia respostas de comando
+            (onvif_probe_response/onvif_discover_response) pro future
+            pendente correspondente — ver _send_agent_command."""
             try:
                 while True:
-                    await websocket.receive_text()
+                    raw = await websocket.receive_text()
+                    try:
+                        data = json.loads(raw)
+                    except ValueError:
+                        continue
+                    request_id = data.get("request_id")
+                    future = _pending_agent_requests.get(request_id) if request_id else None
+                    if future is not None and not future.done():
+                        future.set_result(data)
             except WebSocketDisconnect:
                 pass
 

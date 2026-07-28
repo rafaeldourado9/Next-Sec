@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 from collections.abc import Callable
+from typing import Any
 
 import structlog
 
@@ -103,12 +105,45 @@ class EdgeAgent:
                 task.cancel()
             await asyncio.gather(poll_task, heartbeat_task, ws_task, return_exceptions=True)
 
-    async def _on_config_push(self, event: dict) -> None:
-        """Processa evento de config push recebido via WebSocket."""
+    async def _on_config_push(self, event: dict, send: Callable[[str], Any]) -> None:
+        """Processa evento/comando recebido via WebSocket.
+
+        Dois tipos de mensagem no mesmo canal: config push (fire-and-forget,
+        já existia) e comandos que esperam resposta (onvif_probe_request/
+        onvif_discover_request — a API/dashboard rodam na VPS e não alcançam
+        a LAN do cliente por causa do CGNAT; o agent, que já está na LAN,
+        executa e responde pelo mesmo WebSocket).
+        """
         event_type = event.get("event", "")
         if event_type in ("config_updated", "camera_added", "camera_removed", "restart_stream"):
             logger.info("Config push recebido", event=event_type)
             await self._sync_config()
+            return
+
+        msg_type = event.get("type", "")
+        request_id = event.get("request_id")
+        if msg_type == "onvif_probe_request" and request_id:
+            from agent.onvif_client import probe as onvif_probe
+
+            logger.info("Comando onvif_probe_request recebido", request_id=request_id)
+            result = await onvif_probe(
+                event.get("onvif_url", ""),
+                event.get("username", ""),
+                event.get("password", ""),
+            )
+            await send(json.dumps({
+                "type": "onvif_probe_response", "request_id": request_id, **result,
+            }))
+        elif msg_type == "onvif_discover_request" and request_id:
+            from agent.onvif_client import discover as onvif_discover
+
+            logger.info("Comando onvif_discover_request recebido", request_id=request_id)
+            timeout = int(event.get("timeout_seconds", 3))
+            discovered = await asyncio.to_thread(onvif_discover, timeout)
+            await send(json.dumps({
+                "type": "onvif_discover_response", "request_id": request_id,
+                "cameras": discovered,
+            }))
 
     async def _poll_loop(self, interval: int) -> None:
         """Faz polling de configuração periodicamente."""

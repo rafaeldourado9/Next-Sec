@@ -124,12 +124,17 @@ class CloudClient:
         except httpx.HTTPError as exc:
             logger.warning("Falha ao enviar heartbeat: %s", exc)
 
-    async def listen_for_config_push(self, on_update: Callable[[dict], Any]) -> None:
+    async def listen_for_config_push(
+        self, on_update: Callable[[dict, Callable[[str], Any]], Any]
+    ) -> None:
         """
         Conecta ao WebSocket e recebe config push em tempo real.
 
         Reconecta automaticamente se a conexão cair.
-        Chama on_update(event_data) para cada evento recebido.
+        Chama on_update(event_data, send) para cada evento recebido — `send`
+        permite responder no mesmo canal (usado por comandos tipo
+        onvif_probe_request, que esperam uma resposta correlacionada por
+        request_id; simples config push ignora o `send`).
         """
         import websockets
 
@@ -145,7 +150,7 @@ class CloudClient:
                     async for message in ws:
                         try:
                             data = json.loads(message)
-                            await on_update(data)
+                            await on_update(data, ws.send)
                         except Exception as exc:
                             logger.warning("Erro ao processar mensagem WS: %s", exc)
             except Exception as exc:
