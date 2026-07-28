@@ -48,38 +48,47 @@ próprio arquivo.
 
 ## 3. Server block no nginx do FastOS
 
-No `nginx.conf` do FastOS (`/opt/fastos`, fora deste repo), adicionar um
-`server` para o domínio do Next Sec proxiando para o container pelo nome
-de serviço do compose (`next_sec-nginx-1` ou o nome real — conferir com
-`docker ps` após o primeiro `up`), via a rede `next_sec_edge`:
+O vhost já está pronto em `deploy/next-sec-prod-vhost.conf` (domínio real:
+`vm-server.duckdns.org`, DuckDNS). Instalar no container do nginx do
+FastOS (não é um bind mount, é `docker cp` direto — as mudanças somem se
+o container for recriado, daí o `deploy/next-sec-route-reconcile.sh`):
 
-```nginx
-server {
-    listen 80;
-    server_name nextsec.seudominio.com;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;   # webroot do certbot do FastOS
-    }
-
-    location / {
-        proxy_pass http://next_sec-nginx-1:80;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
+```bash
+docker network connect next_sec_edge fastos-prod-nginx-1
+docker cp deploy/next-sec-prod-vhost.conf fastos-prod-nginx-1:/etc/nginx/conf.d/next-sec.conf
+docker exec fastos-prod-nginx-1 nginx -t && docker exec fastos-prod-nginx-1 nginx -s reload
 ```
 
-Depois de emitir o certificado (certbot do próprio FastOS, mesmo processo
-usado pra Civix), adicionar o `server` `listen 443 ssl` equivalente.
-O Next Sec **não** termina TLS — quem faz isso é sempre o nginx do FastOS.
+Depois de emitir o certificado, adicionar o `server` `listen 443 ssl`
+equivalente. O Next Sec **não** termina TLS — quem faz isso é sempre o
+nginx do FastOS.
 
-> O nginx do Next Sec já serve `/.well-known/acme-challenge/` a partir de
-> `/var/www/certbot` (ver `infra/nginx/nginx.conf`) — é uma segunda opção
-> caso um dia o desafio ACME precise ser repassado até aqui em vez de
-> resolvido direto no nginx do FastOS. Normalmente não é necessário.
+> **Importante:** o `renew-ssl.sh`/`init-ssl.sh` do FastOS usam
+> `certbot/dns-cloudflare` (desafio DNS-01 via API da Cloudflare) — isso
+> só funciona para domínios cujo DNS é gerenciado pela Cloudflare.
+> `vm-server.duckdns.org` é DuckDNS, não Cloudflare, então **não dá** pra
+> usar esse script. Use desafio HTTP-01 via webroot, apontando pro mesmo
+> `/var/www/certbot` que o nginx do Next Sec já serve (ver
+> `infra/nginx/nginx.conf`), que é bind-mounted em `infra/nginx/certbot/`
+> no host:
+>
+> ```bash
+> docker run --rm \
+>   -v fastos_letsencrypt_certs:/etc/letsencrypt \
+>   -v /opt/next_sec/infra/nginx/certbot:/var/www/certbot \
+>   certbot/certbot certonly --webroot -w /var/www/certbot \
+>   -d vm-server.duckdns.org --email equipe@fastosystems.com.br \
+>   --agree-tos --non-interactive
+> ```
+>
+> Isso exige que o vhost `:80` já esteja no ar (proxy pro Next Sec) *antes*
+> de emitir o certificado, servindo `/.well-known/acme-challenge/` — ver
+> `deploy/next-sec-prod-vhost.conf` (primeiro server block).
+>
+> **Renovação:** este certificado não está coberto pelo cron do
+> `renew-ssl.sh` (que só renova domínios Cloudflare). Renovar manualmente
+> a cada ~80 dias repetindo o comando acima, ou automatizar depois com um
+> cron/systemd timer dedicado.
 
 ## 4. Firewall
 
@@ -129,7 +138,10 @@ se o objetivo for produção séria e não só um piloto interno.
 
 ## Próximos passos (Sprint 5)
 
-- [ ] S5-01 Deploy VPS compartilhada — este documento
+- [x] S5-01 Deploy VPS compartilhada — este documento (concluído em
+      2026-07-27: stack no ar, HTTPS válido em https://vm-server.duckdns.org,
+      `db=ok`/`redis=ok`/`rabbitmq=ok`/`mediamtx=ok`, WireGuard 51820/udp
+      escutando; `analytics=degraded` é esperado, sem câmera cadastrada ainda)
 - [ ] S5-02 Arcanum + credenciais de produção (WhatsApp)
 - [ ] S5-03 Seed tenant piloto + câmera real
 - [ ] S5-04 Teste E2E com câmera real
