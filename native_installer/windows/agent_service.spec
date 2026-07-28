@@ -1,11 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Build do executável de serviço Windows do Next Sec Edge Agent.
+"""Build alternativo (NÃO USADO pelo instalador atual) do .exe registrado
+nativamente via pywin32/SCM.
 
-Diferente de `edge_agent/packaging/agent.spec` (console puro, usado no
-Linux/debug local) — este parte de `agent_service.py`: o próprio .exe sabe
-se registrar/iniciar/parar como serviço Windows via pywin32
-(`win32serviceutil.HandleCommandLine`), e é o que o SCM de fato invoca
-quando o serviço inicia no boot.
+ATENÇÃO — achado em produção (2026-07-28): `install.ps1` usa NSSM pra
+registrar o serviço (`nssm install NextSecAgent next-sec-agent.exe`), NÃO
+`agent_service.py install`/SCM nativo — o NSSM invoca o exe como processo
+de console comum (sem args), e um exe construído a partir DESTE spec (que
+embrulha `win32serviceutil.ServiceFramework`/`HandleCommandLine`) não
+reconhece essa invocação como "start pelo SCM" e cai no fallback de
+imprimir a mensagem de uso e sair — serviço entra em crash-loop e o NSSM
+acaba marcando como "Paused". `agent.err.log`/`agent.out.log` ficam vazios
+(o processo nem chega a rodar `SvcDoRun`); o sintoma real fica só em
+`C:\ProgramData\NextSecAgent\logs\service.log`.
+
+O build correto pro instalador atual (NSSM) é
+`edge_agent/packaging/agent.spec` (console puro, `console=True`,
+entry point `packaging/run_agent.py` → `agent.main.main()` direto, sem
+nenhuma dependência de framework de serviço). Esse spec aqui
+(`agent_service.spec` + `agent_service.py`) só faria sentido se um dia o
+instalador for trocado pra registrar o serviço nativamente via SCM em vez
+de NSSM — não é o caso hoje. Não usar pra gerar o `.exe` de produção.
 """
 from pathlib import Path
 
