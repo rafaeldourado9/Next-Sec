@@ -53,6 +53,25 @@ class Settings(BaseSettings):
     # ─── Observabilidade ───────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
 
+    # ─── Edge (Nível 1 — Docker dedicado no cliente, ver ADR-016/017) ──────
+    edge_deployment: bool = Field(
+        default=False,
+        description=(
+            "True quando este analytics roda no hardware do cliente (Nível 1), "
+            "com vms_api_url apontando pra VPS central via túnel WireGuard. "
+            "Ativa multipart de snapshot + edge_generates_clip=true em "
+            "ingest_event, e o enqueue local (ARQ) da task de geração de "
+            "clipe — ver ADR-017 §1."
+        ),
+    )
+    outbox_db_path: str = Field(
+        default="/data/outbox.db",
+        description=(
+            "Caminho do SQLite de fila de retry local para ingest_event "
+            "(ver ADR-017 §2 — sem Postgres local, só stdlib sqlite3)."
+        ),
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -8,6 +8,11 @@ dependencies = [
     "uvicorn[standard]>=0.30,<1",
     "httpx>=0.27,<1",
     "redis>=5.0,<6",
+    # Fila ARQ local — usada só quando edge_deployment=True, pra avisar o
+    # worker de edge (EdgeWorkerSettings, api/vms/worker_edge.py) que um
+    # evento foi ingerido com sucesso e o clipe pode ser gerado localmente
+    # (ver ADR-017 §1). Já é dependência do api/, reaproveitada aqui.
+    "arq>=0.26,<1",
     "numpy>=1.26,<3",
     # contrib (não só o base) — dnn_superres é usado pra melhorar o frame do
     # evento sob demanda (ver analytics/core/frame_enhance.py)
