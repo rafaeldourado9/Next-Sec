@@ -7,10 +7,18 @@
 > para fins de propriedade intelectual ou programas de incentivo.
 >
 > Gerado via Genesis Framework (`genesis-docs`), a partir de: `.genesis/manifest.md`,
-> `.genesis/architecture/*` (ADRs 001–014, `tech-stack.md`, `reuse-plan.md`,
+> `.genesis/architecture/*` (ADRs 001–016, `tech-stack.md`, `reuse-plan.md`,
 > `system-design.md`), `.genesis/memory/progress.md`, código-fonte real em
 > `next_sec/`, e da sessão de deploy/validação em produção realizada em
 > 2026-07-27/28 (VPS `2.25.180.57`, domínio `vm-server.duckdns.org`).
+>
+> **Atualização de 2026-07-28 (tarde):** durante essa mesma janela de
+> validação em produção, um incidente real (vazamento de conexão de banco
+> sob rajada de eventos, detalhado na seção 7.2-bis) expôs um limite
+> estrutural da arquitetura centralizada na VPS e motivou uma mudança de
+> direção (ADR-015/016: mover processamento de vídeo pro hardware do
+> cliente). Este documento foi atualizado para refletir essa decisão — a
+> seção 3.4 descreve a arquitetura alvo, ainda **não implementada**.
 >
 > **Metodologia:** cada afirmação técnica abaixo é rastreável a um arquivo de
 > código, ADR, ou teste executado de fato (não é especificação aspiracional).
@@ -93,6 +101,11 @@ projeto. O que é novo está listado explicitamente na seção 4 do
 
 ### 3.1 Visão de componentes (C4 nível 2, resumido)
 
+> **Nota:** o diagrama abaixo descreve a arquitetura **atual** do piloto
+> (processamento de vídeo centralizado na VPS). A seção 3.4 documenta por
+> que isso se mostrou insustentável na prática e a direção de arquitetura
+> aprovada (ainda não implementada) pra resolver isso.
+
 ```
 ┌─────────────────────┐         WireGuard UDP 51820          ┌──────────────────────────────────┐
 │   Rede do cliente    │ ─────────(túnel outbound)──────────▶ │        VPS (2 vCPU / 8GB,         │
@@ -167,6 +180,58 @@ isolado, então a exceção é justificada caso a caso, não por padrão.
 | Ingestão de mídia | MediaMTX (RTSP↔RTMP↔HLS) | Reaproveitado |
 | Edge agent | Python (PyInstaller → `.exe` no Windows) | Reaproveitado + túnel WireGuard novo |
 | Deploy | Docker Compose numa VPS compartilhada (2 vCPU/8GB) | ADR-005 |
+
+### 3.4 Limite estrutural identificado e arquitetura alvo (ADR-015/016)
+
+**O que aconteceu de verdade (2026-07-28):** horas depois do primeiro
+deploy piloto (Sprint 5), a VPS compartilhada sofreu um incidente de
+produção real — `load average` chegou a **151**, depois **171** num
+segundo episódio no mesmo dia, memória e swap saturados, `502 Bad
+Gateway` na API, afetando também FastOS/Civix (vizinhos na mesma VPS).
+Dois bugs de código foram encontrados e corrigidos (commits `c3efe4d` e
+`c1ae985` — sessões de banco assíncronas compartilhadas indevidamente
+entre corrotinas concorrentes, ver seção 7.2-bis para o detalhamento
+completo). **Mas o segundo episódio aconteceu mesmo depois dos dois
+fixes de código**, só com uma rajada real de eventos gerando clipes via
+`ffmpeg` concorrentemente — a conclusão técnica é que **o problema não
+é (só) bug, é estrutural**: inferência de vídeo (YOLO/InsightFace) e
+geração de clipe (`ffmpeg`) são cargas de CPU pesadas e contínuas que não
+cabem numa VPS de 2 vCPU compartilhada com outros dois produtos, não
+importa quão bem o código trate concorrência.
+
+**Decisão (ADR-015, estendida pela ADR-016):** mover o processamento de
+vídeo (streaming/ingestão, inferência, geração de clipe) para o hardware
+do cliente, deixando a VPS restrita ao papel de **plano de controle
+multi-tenant**: persistência (Postgres), exibição (dashboard/API),
+armazenamento do clipe já pronto (MinIO), gestão (tenants, usuários,
+regras) e relatórios. Concretamente, um modelo de **dois níveis** de
+instalação no cliente, escolhido no momento da instalação:
+
+1. **Nível 1 — Docker dedicado:** quando existe uma máquina própria
+   (mini-PC/NUC) no local do cliente, ela roda os mesmos containers que
+   hoje rodam na VPS (`mediamtx`, `analytics`, `worker`) via um
+   `docker-compose.edge.yml` próprio — reaproveitamento direto de código
+   já testado, sem reescrever a lógica de inferência/clipe. Só o evento
+   final (já com clipe gerado e enviado) sincroniza com a VPS central.
+2. **Nível 2 — Agent nativo embutido:** quando a máquina do cliente é o
+   PC comum dele (não dá pra exigir Docker sem fricção real de
+   instalação — confirmado que isso varia de cliente pra cliente), a
+   inferência é embutida diretamente no executável nativo do
+   `edge_agent/` (PyInstaller), com detecção automática de GPU/CPU —
+   plano original da ADR-015.
+3. **Nível 3 — VPS centralizada (fallback):** o que existe hoje. Deixa
+   de ser o caminho default e vira plano B explícito, só pra clientes
+   ainda não migrados ou sem hardware suficiente pros níveis 1/2.
+
+**Estado real em 2026-07-28:** a decisão está documentada (ADR-016), a
+implementação **ainda não começou**. Como mitigação temporária até essa
+migração, a geração de clipe foi colocada atrás de uma flag
+(`ENABLE_EVENT_CLIPS=false` em produção) — o pipeline de notificação
+(WhatsApp com foto do snapshot + texto) continua funcionando
+normalmente, só a geração do vídeo via `ffmpeg` (a parte que sobrecarrega
+a CPU) está temporariamente desativada na VPS. Ver `ADR-015` e `ADR-016`
+para o racional completo, alternativas consideradas e escopo de
+implementação.
 
 ---
 
@@ -340,6 +405,13 @@ produção encontrados e corrigidos durante esse teste (polígono de ROI
 corrompido, matching de tracking instável a baixo FPS, timezone errado no
 agendamento, entre outros).
 
+> **Nota (2026-07-28):** os passos 2 (leitura pelo `analytics`) e 4
+> (geração de clipe) são exatamente os que a ADR-015/016 planeja mover
+> pro hardware do cliente (seção 3.4) — hoje ainda rodam centralizados na
+> VPS, e o passo 4 está temporariamente desativado em produção
+> (`ENABLE_EVENT_CLIPS=false`) depois do incidente descrito na seção
+> 7.2-bis.
+
 ---
 
 ## 6. Reconhecimento facial — decisão e pipeline real
@@ -403,7 +475,7 @@ funcional e é parte do pipeline, não um formulário decorativo.
 | 2 — Contatos + horário de zona | CRUD de contatos (E.164), CRUD de `roi_schedules`, lógica "zona armada agora?" (cruzamento de meia-noite testado), 19 testes reais em container | ✅ Concluído |
 | 3 — Watchlist/reconhecimento facial | CRUD `face_profiles`, embedding real (InsightFace), matching por similaridade, gate de LGPD, 31 testes reais | ✅ Concluído — corrigiu o gate de LGPD nunca ativado e o agendamento de horário nunca filtrando de fato a inferência |
 | 4 — Storage & canal | `MinIOStorageProvider`, geração de clipe (ffmpeg), `ChannelAdapter` Arcanum, dispatcher, retenção/limpeza automática de clipes, 17 testes novos (41 total) | ✅ Concluído — descobriu três tabelas de evento paralelas nunca consolidadas (ver 7.2) |
-| 5 — Deploy piloto | Deploy real na VPS compartilhada, DNS, TLS, pareamento de agente Windows, seed de tenant/licença | 🔄 Em andamento — deploy, TLS e pareamento do agente **concluídos e validados nesta sessão**; pendente: canal WhatsApp pareado, câmera real cadastrada, teste E2E completo |
+| 5 — Deploy piloto | Deploy real na VPS compartilhada, DNS, TLS, pareamento de agente Windows, seed de tenant/licença, ONVIF discovery, ledger de webhook, **incidente de produção real + mudança de arquitetura (ver 7.2-bis)** | 🔄 Em andamento — deploy, TLS e pareamento do agente concluídos; incidente de produção diagnosticado e mitigado (não resolvido na raiz — a raiz é a arquitetura em si, ver ADR-016); pendente: migração de dois níveis, canal WhatsApp pareado, câmera real cadastrada, teste E2E completo |
 
 ### 7.2 Dívida técnica conhecida e documentada (não escondida)
 
@@ -426,6 +498,62 @@ honesto não omite dívida técnica real:
   Cloudflare, que não serve para domínios DuckDNS; o certificado do Next Sec
   foi emitido via HTTP-01/webroot nesta sessão e precisa de renovação manual
   a cada ~80 dias até que isso seja automatizado.
+
+### 7.2-bis Incidente de produção real (2026-07-28) — causa raiz e mudança de arquitetura
+
+Este é o achado mais significativo da sessão do ponto de vista de
+arquitetura, então merece registro detalhado (é o gatilho direto da
+ADR-015/016, seção 3.4).
+
+**Sintoma:** horas após o deploy do Sprint 5, a VPS apresentou `load
+average` de **151**, memória e swap (4GB) praticamente saturados,
+`next_sec-worker-1` com healthcheck falhando, `GET /api/v1/events`
+retornando `502`. Por ser VPS compartilhada, isso também degradou
+FastOS/Civix.
+
+**Causa raiz #1 (corrigida, commit `c3efe4d`):** em
+`notifications/service.py::evaluate_and_dispatch`, quando 2+ regras de
+notificação (`destination_type=contact`) casavam com o mesmo evento, um
+`asyncio.gather` rodava múltiplos `await self._contacts.get_by_id(...)`
+concorrentemente — todos usando a **mesma `AsyncSession`** (SQLAlchemy
+async não suporta isso). As conexões ficavam presas em `idle in
+transaction` para sempre, esgotando o pool de conexões do worker (10 no
+total). Fix: resolver os contatos sequencialmente antes do `gather`.
+
+**Causa raiz #2 (corrigida, commit `c1ae985`), encontrada minutos
+depois do deploy do fix #1:** o mesmo padrão existia em
+`event_clips/service.py::generate_and_upload` — a sessão de banco ficava
+aberta durante **todo** o render via `ffmpeg` e o upload pro storage
+(ambos lentos, sem relação nenhuma com banco). Sob uma rajada de eventos
+reais (`analytics.speed.measured`), isso empilhou conexões presas de
+novo. Fix: cada atualização de status passou a usar uma sessão própria,
+curta, commitada e fechada na hora — a sessão principal não fica mais
+presa durante o trabalho pesado. `max_jobs` do worker ARQ também foi
+reduzido de 50 para 10, alinhando com o tamanho real do pool de conexões.
+
+**O achado mais importante — o incidente se repetiu mesmo depois dos
+dois fixes:** com o código corrigido e a concorrência limitada, uma
+nova rajada de eventos reais fez o `load average` bater **171** (pior
+que o pico original), com uma dezena de processos `ffmpeg` concorrentes
+consumindo centenas de MB de RAM cada, num host de 2 vCPU / 8GB. Isso
+foi decisivo: **não era (só) um bug de concorrência de banco — é que
+inferência de vídeo e encoding via `ffmpeg`, mesmo bem escritos e bem
+limitados, são cargas de CPU/memória incompatíveis com uma VPS
+pequena e compartilhada rodando várias câmeras.** Essa evidência
+motivou diretamente a ADR-015 (mover inferência pro edge) e sua extensão,
+a ADR-016 (modelo de dois níveis: Docker dedicado no cliente ou agent
+nativo embutido, com a VPS central virando fallback, não default).
+
+**Mitigação em produção até a migração ser implementada:** o worker foi
+temporariamente parado e religado com a geração de clipe desativada via
+flag (`ENABLE_EVENT_CLIPS=false`, commit `808f04f`) — o pipeline de
+notificação (foto + texto via WhatsApp) continua funcional, só o
+`ffmpeg` (parte cara) está pausado.
+
+Isso é um exemplo real (não hipotético) de um limite arquitetural sendo
+descoberto por evidência empírica em produção, não por análise teórica
+antecipada — e da decisão de arquitetura sendo revisada em resposta a
+essa evidência, dentro do mesmo dia.
 
 ### 7.3 Bugs reais encontrados e corrigidos durante testes com dados reais
 
@@ -584,6 +712,8 @@ patente que provavelmente não seria concedida.
 |---|---|
 | `.genesis/manifest.md` | Requisitos originais, público-alvo, escopo |
 | `.genesis/architecture/adrs/001` a `014` | Decisões arquiteturais individuais, com racional e trade-offs |
+| `.genesis/architecture/adrs/015-edge-inference.md` | Decisão de mover inferência de vídeo pro edge, motivada pelo incidente de produção (seção 7.2-bis) |
+| `.genesis/architecture/adrs/016-edge-two-tier-deployment.md` | Modelo de dois níveis (Docker dedicado / agent nativo embutido / VPS fallback) — estende a ADR-015 |
 | `.genesis/architecture/tech-stack.md` | Stack completa com justificativa por camada |
 | `.genesis/architecture/reuse-plan.md` | O que veio do `vms/`, o que é novo, bugs encontrados e corrigidos |
 | `.genesis/memory/progress.md` | Histórico sprint a sprint com status real |
