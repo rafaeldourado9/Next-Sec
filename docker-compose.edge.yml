@@ -1,0 +1,214 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Next Sec — Edge Nível 1 (Docker dedicado no hardware do cliente)
+#
+# Ver ADR-016 (docs/../.genesis/architecture/adrs/016-edge-two-tier-deployment.md)
+# — por que existem dois níveis de instalação no cliente — e ADR-017
+# (.genesis/architecture/adrs/017-edge-sync-protocol.md) — o protocolo de
+# sincronização (evento rápido multipart + clipe assíncrono via PUT) que
+# este compose implementa.
+#
+# Reempacota, SEM reescrever a lógica de nenhum deles, os três serviços que
+# já existem no `docker-compose.yml` principal:
+#   - mediamtx   (ingestão RTSP/RTMP das câmeras do cliente)
+#   - analytics  (YOLO intrusion/speed, InsightFace face_recognition)
+#   - worker     (aqui rodando `vms.worker_edge.EdgeWorkerSettings`, não
+#                 `vms.worker.WorkerSettings` — só a task de geração/envio
+#                 de clipe, ver ADR-017 §1)
+# + um Redis local, cuja ÚNICA função aqui é ser o broker da fila ARQ do
+# worker de edge (não um cache de aplicação — ver decisão de
+# maxmemory-policy abaixo).
+#
+# NÃO incluído (de propósito — ver ADR-016/017):
+#   - postgres        → nenhuma lógica deste compose toca banco relacional;
+#                        a fila de retry de eventos/clipes é SQLite local
+#                        (`/data/outbox.db`, gerido pelo próprio `analytics`,
+#                        ver ADR-017 §2). Único fonte-de-verdade de negócio
+#                        continua sendo o Postgres da VPS central.
+#   - rabbitmq         → só usado por serviços centrais (billing/relatórios
+#                        fora de escopo do Nível 1)
+#   - api, frontend,
+#     nginx, arcanum   → papel de VPS central (autenticação de negócio,
+#                        dispatch de notificação/Arcanum, UI) — ADR-017 §3
+#                        deixa explícito que contacts/notification_rules
+#                        NUNCA são lidos no edge
+#   - minio            → storage final do clipe é a VPS central; o worker de
+#                        edge só faz PUT do MP4 já renderizado pra ela
+#   - wireguard (hub)  → o hub só existe na VPS central; o cliente é o peer
+#                        (fora do escopo deste compose)
+#   - worker-low,
+#     cloudflared,
+#     backup-scheduler → só fazem sentido centralizados
+#   - edge-agent       → é o caminho de Nível 2 (agent nativo sem Docker,
+#                        ADR-016) — fora de escopo aqui
+#
+# LIMITAÇÃO CONHECIDA (não resolvida neste sprint — ver S6-05, fora do
+# escopo travado da task): `infra/mediamtx/mediamtx.yml` tem
+# `authHTTPAddress` e os hooks `runOnReady`/`runOnNotReady`/
+# `runOnRecordSegmentComplete` hardcoded para `http://api:8000`, que só
+# resolve dentro da rede do `docker-compose.yml` central (onde existe um
+# container chamado `api`). Neste compose de edge não há `api` local por
+# desenho (ADR-017 §3) — esses hooks precisam apontar para a VPS central
+# via o mesmo túnel WireGuard que `VMS_API_URL` usa. Corrigir isso exige
+# tornar `mediamtx.yml` parametrizável (env var ou templating no
+# entrypoint), o que é uma mudança em `infra/mediamtx/`, fora do escopo
+# desta task (que só pedia reempacotar o compose, não alterar a lógica dos
+# serviços). Registrar como gap a resolver antes de um deploy real em
+# cliente Nível 1.
+# ─────────────────────────────────────────────────────────────────────────
+
+services:
+  # ─── Redis local — SÓ broker da fila ARQ do worker de edge ───────────────
+  # Decisão de memory-policy: o Redis central (docker-compose.yml) usa
+  # `allkeys-lru` porque lá ele é só cache. Aqui ele também guarda a fila
+  # ARQ de jobs pendentes (`task_render_and_upload_edge_clip`) — sob
+  # `allkeys-lru`, se a memória enchesse, o Redis poderia evictar
+  # silenciosamente as chaves/listas que backing a fila ANTES do worker
+  # processar o job, perdendo o clipe sem nenhum erro visível (pior que uma
+  # falha explícita, já que o retry nativo do ARQ — ver
+  # `api/src/vms/event_clips/edge_tasks.py` — só cobre falhas de rede no
+  # PUT, não a perda silenciosa do próprio job na fila).
+  # Por isso: `noeviction` (rejeita escrita/derruba com erro visível em vez
+  # de evictar silenciosamente) + `maxmemory` modesto (128mb — hardware de
+  # cliente é possivelmente um mini-PC/NUC, e o volume de jobs pendentes
+  # aqui é pequeno: strings de event_id + path de snapshot, não payloads
+  # grandes). Volume dedicado (`redis_data`) para o RDB sobreviver a um
+  # restart do container sem perder jobs ainda não processados.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy noeviction --save 60 100
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [next_sec_edge]
+
+  # ─── MediaMTX — ingestão RTSP/RTMP das câmeras do cliente ─────────────────
+  # Mesmo build do compose central — nenhuma mudança de lógica. Só expõe as
+  # portas de ingestão (RTSP/RTMP); API de controle (9997) e demais portas
+  # de leitura (HLS/WebRTC) não são publicadas aqui — nada neste compose
+  # consome o stream via rede externa, só o `analytics` local via rede
+  # interna do Docker. Ver LIMITAÇÃO CONHECIDA acima sobre authHTTPAddress.
+  mediamtx:
+    build:
+      context: ./infra/mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"   # RTSP
+      - "1935:1935"   # RTMP (push das câmeras/agent do cliente)
+    volumes:
+      - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+      - recordings:/recordings
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9997/v3/config/global/get"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks: [next_sec_edge]
+
+  # ─── Analytics — YOLO intrusion/speed, InsightFace face_recognition ──────
+  # Mesmo build/target do compose central. Diferenças (ver ADR-017 §1/§2):
+  #   - EDGE_DEPLOYMENT=true              → VMSClient manda multipart com
+  #                                          edge_generates_clip=true e
+  #                                          enfileira a task de clipe local
+  #   - OUTBOX_DB_PATH=/data/outbox.db    → fila de retry SQLite (sem
+  #                                          Postgres local, ver ADR-017 §2)
+  #   - VMS_API_URL/VMS_API_KEY           → apontam pra VPS central via
+  #                                          túnel WireGuard, não pra um
+  #                                          `api` local (que não existe
+  #                                          neste compose)
+  #   - REDIS_URL=redis://redis:6379/0    → MESMO host+DB que o worker de
+  #                                          edge lê (ver nota no serviço
+  #                                          `worker` abaixo) — se
+  #                                          divergirem, o worker nunca vê
+  #                                          os jobs que o analytics
+  #                                          enfileira via `_enqueue_local_
+  #                                          clip_task` (analytics/core/
+  #                                          vms_client.py)
+  analytics:
+    build:
+      context: ./analytics
+      target: ${ANALYTICS_TARGET:-cpu}
+    restart: unless-stopped
+    environment:
+      - VMS_API_URL=${VMS_API_URL:?defina VMS_API_URL (endereço da VPS central via WireGuard) em .env.edge}
+      - VMS_API_KEY=${VMS_API_KEY:?defina VMS_API_KEY (api key deste tenant/agente) em .env.edge}
+      - MEDIAMTX_HOST=mediamtx
+      - REDIS_URL=redis://redis:6379/0
+      - EDGE_DEPLOYMENT=true
+      - OUTBOX_DB_PATH=/data/outbox.db
+      - ANALYTICS_FPS=${ANALYTICS_FPS:-3}
+      - YOLO_IMGSZ=${YOLO_IMGSZ:-640}
+      - YOLO_CONF=${YOLO_CONF:-0.30}
+      - YOLO_MODEL_PATH=${YOLO_MODEL_PATH:-/models/object.pt}
+      - FACE_RECOGNITION_MODEL_PATH=${FACE_RECOGNITION_MODEL_PATH:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./analytics/models:/models:ro
+      - snapshots:/snapshots
+      - outbox_data:/data
+    depends_on:
+      mediamtx:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8001/health').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks: [next_sec_edge]
+
+  # ─── Worker de edge — SÓ geração/envio de clipe (EdgeWorkerSettings) ─────
+  # Mesma imagem `api/` (target production), mas comando/env diferentes do
+  # worker central: roda `vms.worker_edge.EdgeWorkerSettings` (ver
+  # `api/src/vms/worker_edge.py`) — só a task `task_render_and_upload_edge_
+  # clip` (ffmpeg local + PUT pra VPS). SEM DATABASE_URL/Postgres (ADR-017
+  # §2) — este worker não toca banco nenhum, então nenhuma env de Postgres
+  # é definida e não há serviço `postgres` neste compose.
+  # REDIS_URL aqui precisa ser o MESMO host+DB do `analytics` acima
+  # (redis://redis:6379/0) — é o valor lido por `_edge_settings()` em
+  # `worker_edge.py` (default já é esse mesmo valor, mas fixado explicitamente
+  # aqui para deixar o acoplamento visível em vez de depender de dois
+  # defaults implícitos coincidirem).
+  worker:
+    build:
+      context: ./api
+      target: production
+    restart: unless-stopped
+    command: python -m arq vms.worker_edge.EdgeWorkerSettings
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - VMS_API_URL=${VMS_API_URL:?defina VMS_API_URL (endereço da VPS central via WireGuard) em .env.edge}
+      - VMS_API_KEY=${VMS_API_KEY:?defina VMS_API_KEY (api key deste tenant/agente) em .env.edge}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      # Mesmo volume Docker, mesmo path absoluto (/snapshots) do `analytics`
+      # — `task_render_and_upload_edge_clip` espera `snapshot_local_path`
+      # como caminho absoluto local (api/src/vms/event_clips/edge_tasks.py).
+      # Só leitura: este worker nunca escreve em /snapshots (o MP4 renderizado
+      # vai para um arquivo temporário via tempfile, não para este volume —
+      # ver api/src/vms/event_clips/ffmpeg.py:render_freeze_frame_clip).
+      - snapshots:/snapshots:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r = redis.Redis(host='redis'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks: [next_sec_edge]
+
+volumes:
+  recordings:
+  snapshots:
+  outbox_data:
+  redis_data:
+
+networks:
+  next_sec_edge:
+    driver: bridge

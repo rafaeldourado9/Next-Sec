@@ -24,6 +24,7 @@ frontend/dist/
 .env
 .env.*
 !.env.example
+!.env.edge.example
 
 # Docker / data volumes (bind mounts locais, se usados em dev)
 *.log
