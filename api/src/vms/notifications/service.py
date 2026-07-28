@@ -108,21 +108,41 @@ class NotificationService:
         rules = await self._rules.list_by_tenant(tenant_id, active_only=True)
         matching = [r for r in rules if r.matches(event_type)]
 
+        # Resolve os contatos ANTES de disparar em paralelo — SEMPRE sequencial.
+        # AsyncSession não é seguro pra uso concorrente (achado em produção,
+        # 2026-07-28): quando 2+ regras destination_type=contact casavam com o
+        # mesmo evento, os `await self._contacts.get_by_id(...)` concorrentes
+        # (dentro do asyncio.gather abaixo) disputavam a mesma conexão/sessão
+        # do Postgres — a conexão ficava presa em "idle in transaction"
+        # indefinidamente. Isso esgotava o pool de conexões do worker (só 10
+        # no total) e vazava memória (~4.5GB em algumas horas) até derrubar a
+        # VPS inteira (load average 151, 502 na API — ver ADR-015). Resolver
+        # os contatos aqui é rápido (SELECT simples) e sequencial não é o
+        # gargalo real — o gargalo é a chamada de rede pro canal (Arcanum/
+        # webhook), que continua paralela abaixo, sem tocar o banco.
+        contacts_by_rule: dict[str, object | None] = {}
+        for rule in matching:
+            if rule.destination_type != "contact":
+                continue
+            if not self._contacts or not rule.contact_id:
+                logger.warning(
+                    "Regra %s é destination_type=contact mas sem contact_id/repo — pulando",
+                    rule.id,
+                )
+                contacts_by_rule[rule.id] = None
+                continue
+            contacts_by_rule[rule.id] = await self._contacts.get_by_id(rule.contact_id, tenant_id)
+
         # Dispara todas as regras em paralelo — não sequencial. Uma regra
         # lenta ou quebrada (ex.: número de WhatsApp que sempre falha e faz
         # 3 tentativas com backoff, ~3.5s) não pode atrasar a notificação das
         # outras regras que funcionam normalmente (achado em teste local:
         # regra ruim no meio da lista segurava a notificação da regra boa
-        # até terminar de tentar e desistir).
+        # até terminar de tentar e desistir). Só a chamada de rede roda
+        # concorrente aqui — nenhum acesso a `self._contacts`/sessão do banco.
         async def _dispatch_one(rule: NotificationRule) -> NotificationLog | None:
             if rule.destination_type == "contact":
-                if not self._contacts or not rule.contact_id:
-                    logger.warning(
-                        "Regra %s é destination_type=contact mas sem contact_id/repo — pulando",
-                        rule.id,
-                    )
-                    return None
-                contact = await self._contacts.get_by_id(rule.contact_id, tenant_id)
+                contact = contacts_by_rule.get(rule.id)
                 if not contact or not contact.is_active:
                     logger.info(
                         "Contato %s inativo/removido — notificação da regra %s não enviada",
