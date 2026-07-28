@@ -180,6 +180,7 @@ async def task_dispatch_event_notifications(
     payload: dict,
     snapshot_path: str | None,
     camera_id: str | None = None,
+    edge_generates_clip: bool = False,
 ) -> None:
     """Gera clipe (best-effort) e dispara notificações de contato (WhatsApp/etc)
     pra um evento de analytics — em background, fora do request de ingestão.
@@ -191,6 +192,16 @@ async def task_dispatch_event_notifications(
     registro em si sendo instantâneo (achado: usuário reportou demora
     perceptível). Enfileirado via ARQ — o evento já está salvo e visível
     (SSE já disparado antes desta task existir) antes desta task nem começar.
+
+    `edge_generates_clip` (ver ADR-017 §1): quando True, o evento veio de um
+    analytics Nível 1 (Docker dedicado no cliente) — o worker de edge local já
+    vai gerar o MP4 (ffmpeg no hardware do cliente) e enviá-lo via
+    `PUT /plugins/events/{id}/clip`. A VPS central pula inteiramente a
+    geração via `generate_and_upload` (zero ffmpeg aqui para esses eventos —
+    exatamente a carga que causou o incidente de produção, ver ADR-015/016).
+    O resto da função (notificação com o JPEG do snapshot) roda igual — a
+    notificação nunca dependeu do clipe, só do snapshot bruto (ver ADR-017,
+    achado #2).
     """
     import os
 
@@ -201,13 +212,19 @@ async def task_dispatch_event_notifications(
         if not snapshot_path:
             return
 
+        if edge_generates_clip:
+            logger.info(
+                "Evento %s originado de edge (ADR-017) — geração de clipe pulada "
+                "aqui, aguardando PUT /plugins/events/%s/clip do worker local",
+                event_id, event_id,
+            )
         # Kill switch temporário (ver ADR-016): geração de clipe via ffmpeg é
         # a parte pesada que sobrecarregou a VPS compartilhada mesmo depois
         # dos fixes de sessão — desativável sem rebuild até a migração pro
         # edge (Docker dedicado / agent nativo) estar pronta. Não afeta a
         # notificação em si (foto do snapshot + texto), que é leve e roda
         # logo abaixo independente desta flag.
-        if os.getenv("ENABLE_EVENT_CLIPS", "true").lower() == "true":
+        elif os.getenv("ENABLE_EVENT_CLIPS", "true").lower() == "true":
             try:
                 from vms.event_clips.service import build_event_clip_service
 

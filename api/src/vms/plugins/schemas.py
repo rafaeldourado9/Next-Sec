@@ -52,6 +52,15 @@ class PluginEventRequest(BaseModel):
         default=None,
         description="Caminho relativo do snapshot JPEG (relativo a /snapshots/)",
     )
+    edge_generates_clip: bool = Field(
+        default=False,
+        description=(
+            "True quando o evento vem de um analytics Nível 1 (Docker dedicado "
+            "no cliente, ver ADR-016/017) — o worker local já vai gerar o clipe "
+            "MP4 e enviá-lo via PUT /plugins/events/{id}/clip, então a VPS "
+            "central pula a geração via ffmpeg para este evento."
+        ),
+    )
 
 
 class PluginEventResponse(BaseModel):

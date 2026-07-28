@@ -94,17 +94,69 @@ class EventClipService:
             local_mp4 = await self._render_freeze_frame_clip(
                 str(snapshot_file), duration_seconds=clip.duration_seconds
             )
+        except Exception as exc:
+            logger.exception("Falha ao renderizar clipe do evento %s", vms_event_id)
+            return await self._update_status_isolated(
+                clip.id, ClipStatus.FAILED, error_message=str(exc)[:1000]
+            )
+
+        return await self._upload_and_finalize(clip, tenant_id, local_mp4)
+
+    async def receive_pregenerated_clip(
+        self, vms_event_id: str, tenant_id: str, local_mp4_path: str
+    ) -> EventClip:
+        """Persiste um clipe MP4 **já renderizado** por um worker de edge (Nível 1,
+        Docker dedicado no cliente — ver ADR-017 §1) — reaproveita a mesma parte
+        de "criar/achar clip row, subir pro storage, marcar UPLOADED" de
+        `generate_and_upload` (via `_upload_and_finalize`), sem rodar ffmpeg: o
+        MP4 já chegou pronto no corpo do `PUT /plugins/events/{id}/clip`.
+
+        Idempotente como `generate_and_upload`: se já existe um clipe para este
+        evento (ex.: reenvio do worker de edge após confirmação perdida na
+        rede), retorna o existente e descarta o arquivo recebido.
+        """
+        existing = await self._clips.get_by_event(vms_event_id)
+        if existing:
+            if os.path.exists(local_mp4_path):
+                os.remove(local_mp4_path)
+            return existing
+
+        clip = await self._clips.create(
+            EventClip(id=str(uuid.uuid4()), vms_event_id=vms_event_id)
+        )
+        await self._session.commit()
+        clip = await self._update_status_isolated(clip.id, ClipStatus.STAGED)
+
+        if not os.path.isfile(local_mp4_path):
+            return await self._update_status_isolated(
+                clip.id, ClipStatus.FAILED,
+                error_message="Clipe MP4 não encontrado no upload recebido",
+            )
+
+        return await self._upload_and_finalize(clip, tenant_id, local_mp4_path)
+
+    async def _upload_and_finalize(
+        self, clip: EventClip, tenant_id: str, local_mp4_path: str
+    ) -> EventClip:
+        """Sobe um MP4 já em disco pro storage e marca o clipe como UPLOADED
+        (ou FAILED em caso de erro) — parte final compartilhada entre
+        `generate_and_upload` (que renderiza o MP4 via ffmpeg antes de chamar
+        isto) e `receive_pregenerated_clip` (que recebe o MP4 já pronto do
+        worker de edge). Sempre remove `local_mp4_path` do disco ao final,
+        com sucesso ou não."""
+        try:
             try:
                 key = f"{tenant_id}/{clip.id}.mp4"
-                url = await self._storage.upload(local_mp4, key, content_type="video/mp4")
+                url = await self._storage.upload(local_mp4_path, key, content_type="video/mp4")
             finally:
-                os.remove(local_mp4)
+                if os.path.exists(local_mp4_path):
+                    os.remove(local_mp4_path)
 
             return await self._update_status_isolated(
                 clip.id, ClipStatus.UPLOADED, storage_ref=key, storage_url=url
             )
         except Exception as exc:
-            logger.exception("Falha ao gerar/enviar clipe do evento %s", vms_event_id)
+            logger.exception("Falha ao enviar clipe do evento %s", clip.vms_event_id)
             return await self._update_status_isolated(
                 clip.id, ClipStatus.FAILED, error_message=str(exc)[:1000]
             )

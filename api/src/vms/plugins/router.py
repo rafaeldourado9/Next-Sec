@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,6 +68,34 @@ async def _resolve_plugin_tenant(api_key: ApiKeyHeader, db: DbSession) -> str:
 
 def _plugin_svc(db: AsyncSession) -> PluginService:
     return PluginService(CameraRepository(db))
+
+
+def _save_uploaded_snapshot(tenant_id: str, camera_id: str, image_bytes: bytes) -> str | None:
+    """Salva o snapshot recebido via multipart no mesmo layout de diretório
+    usado por `Orchestrator._save_snapshot` (analytics/core/orchestrator.py)
+    — `/snapshots/{tenant}/{camera}/{data}/{uuid}.jpg` — para que o resto do
+    código (event_clips, notificações) continue lendo `snapshot_path` do
+    mesmo jeito, sem saber se o arquivo veio do processo local (Nível 3) ou
+    de um POST multipart de um analytics de edge (Nível 1, ver ADR-017 §1).
+    """
+    from datetime import date as _date
+
+    from vms.events.images import SNAPSHOTS_DIR
+
+    today = _date.today().isoformat()
+    rel_dir = f"{tenant_id}/{camera_id}/{today}"
+    dir_path = SNAPSHOTS_DIR / rel_dir
+    try:
+        dir_path.mkdir(parents=True, exist_ok=True)
+        filename = f"{uuid.uuid4()}.jpg"
+        (dir_path / filename).write_bytes(image_bytes)
+        return f"{rel_dir}/{filename}"
+    except Exception:
+        logger.exception(
+            "Falha ao salvar snapshot multipart do plugin (tenant=%s camera=%s)",
+            tenant_id, camera_id,
+        )
+        return None
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -140,18 +169,63 @@ async def get_stream_token(
 )
 async def ingest_plugin_event(
     request: Request,
-    body: PluginEventRequest,
     api_key: ApiKeyHeader,
     db: DbSession,
 ) -> PluginEventResponse:
     """
     Recebe evento detectado pelo plugin e persiste como VmsEvent.
 
+    Aceita dois formatos de corpo, distinguidos pelo `Content-Type`:
+
+    - `application/json` — comportamento original, inalterado. Usado por
+      setups Nível 3 (VPS faz tudo), onde o snapshot já existe localmente
+      na mesma máquina que roda a API.
+    - `multipart/form-data` — usado pelo Nível 1 (edge, Docker dedicado no
+      cliente — ver ADR-017 §1): campo `payload` com o mesmo JSON de sempre
+      (serializado como string) + campo de arquivo opcional `snapshot_file`.
+      O JPEG só existe no disco de quem o gerou, então precisa viajar na
+      mesma requisição. Quando o arquivo vem, ele tem prioridade sobre
+      `snapshot_path` do JSON (que, nesse caso, é só um path local do
+      remetente, sem sentido no disco desta VPS) — o arquivo recebido é
+      salvo aqui e seu path relativo passa a ser o `snapshot_path` real do
+      evento.
+
     O `event_type` é livre — convenção recomendada: `<plugin>.<acao>`.
     Exemplos: `intrusion.detected`, `lpr.detected`, `people.count`.
 
     O `payload` aceita qualquer estrutura — o VMS não valida o conteúdo.
     """
+    content_type = request.headers.get("content-type", "")
+    uploaded_snapshot: bytes | None = None
+
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        raw_payload = form.get("payload")
+        if raw_payload is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Campo 'payload' (JSON) obrigatório em requisição multipart",
+            )
+        try:
+            body = PluginEventRequest.model_validate_json(raw_payload)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Payload inválido: {exc}",
+            ) from exc
+        snapshot_file = form.get("snapshot_file")
+        if snapshot_file is not None and hasattr(snapshot_file, "read"):
+            uploaded_snapshot = await snapshot_file.read()
+    else:
+        try:
+            raw_json = await request.json()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"JSON inválido: {exc}",
+            ) from exc
+        body = PluginEventRequest.model_validate(raw_json)
+
     # Autentica via API key (valida que a chave existe)
     await _resolve_plugin_tenant(api_key, db)
 
@@ -165,6 +239,10 @@ async def ingest_plugin_event(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Câmera não encontrada")
     tenant_id = str(cam_row)
 
+    snapshot_path = body.snapshot_path
+    if uploaded_snapshot is not None:
+        snapshot_path = _save_uploaded_snapshot(tenant_id, body.camera_id, uploaded_snapshot)
+
     event_id = await _plugin_svc(db).ingest_event(
         db=db,
         tenant_id=tenant_id,
@@ -173,7 +251,7 @@ async def ingest_plugin_event(
         confidence=body.confidence,
         occurred_at=body.occurred_at,
         payload=body.payload,
-        snapshot_path=body.snapshot_path,
+        snapshot_path=snapshot_path,
     )
 
     # SSE em tempo real para o frontend
@@ -209,7 +287,7 @@ async def ingest_plugin_event(
     # já prontos (achado em teste local: usuário via demora perceptível pra
     # "contar" o evento). event-driven de verdade agora: o request retorna
     # assim que o evento é salvo, notificação roda em paralelo no worker.
-    if body.snapshot_path:
+    if snapshot_path:
         try:
             arq_pool = getattr(request.app.state, "arq_redis", None)
             if arq_pool is not None:
@@ -219,8 +297,9 @@ async def ingest_plugin_event(
                     body.event_type,
                     event_id,
                     body.payload or {},
-                    body.snapshot_path,
+                    snapshot_path,
                     body.camera_id,
+                    body.edge_generates_clip,
                 )
         except Exception:
             logger.exception(
@@ -228,6 +307,56 @@ async def ingest_plugin_event(
             )
 
     return PluginEventResponse(id=event_id)
+
+
+@router.put(
+    "/plugins/events/{event_id}/clip",
+    response_model=PluginEventResponse,
+    summary="Recebe clipe MP4 pré-gerado por um worker de edge (ADR-017)",
+)
+async def receive_pregenerated_event_clip(
+    event_id: str,
+    api_key: ApiKeyHeader,
+    db: DbSession,
+    clip_file: UploadFile = File(...),
+) -> PluginEventResponse:
+    """
+    Recebe o MP4 **já renderizado** pelo worker de edge local (Nível 1,
+    Docker dedicado no cliente — ver ADR-017 §1) e só persiste/sobe pro
+    storage — nenhum ffmpeg roda aqui. Complementa o evento criado por
+    `POST /plugins/events` com `edge_generates_clip=true`, que pulou a
+    geração do clipe deliberadamente (ver `task_dispatch_event_
+    notifications`).
+
+    Autenticado pela mesma API key de plugin dos demais endpoints — o
+    `event_id` é resolvido para seu tenant antes do upload, garantindo que
+    o clipe não vaze pro storage de outro tenant.
+    """
+    await _resolve_plugin_tenant(api_key, db)
+
+    from sqlalchemy import select as _sa_select
+    from vms.events.models import VmsEventModel
+
+    tenant_id = await db.scalar(
+        _sa_select(VmsEventModel.tenant_id).where(VmsEventModel.id == event_id)
+    )
+    if tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evento não encontrado")
+
+    import tempfile
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    content = await clip_file.read()
+    with open(tmp_path, "wb") as f:
+        f.write(content)
+
+    from vms.event_clips.service import build_event_clip_service
+
+    clip = await build_event_clip_service(db).receive_pregenerated_clip(
+        vms_event_id=event_id, tenant_id=str(tenant_id), local_mp4_path=tmp_path,
+    )
+    return PluginEventResponse(id=clip.id, status=clip.status.value)
 
 
 @router.get(
