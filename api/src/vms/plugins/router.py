@@ -331,8 +331,15 @@ async def receive_pregenerated_event_clip(
     Autenticado pela mesma API key de plugin dos demais endpoints — o
     `event_id` é resolvido para seu tenant antes do upload, garantindo que
     o clipe não vaze pro storage de outro tenant.
+
+    Isolamento de tenant (achado e corrigido na auditoria de S6-06): o
+    tenant_id resolvido da API key precisa bater com o tenant dono do
+    evento — cada cliente Nível 1 tem sua própria API key (ver
+    `.env.edge.example`), então sem esta checagem a API key de um tenant
+    poderia anexar um clipe ao evento de outro tenant (bastando conhecer o
+    `event_id`, um UUID).
     """
-    await _resolve_plugin_tenant(api_key, db)
+    resolved_tenant_id = await _resolve_plugin_tenant(api_key, db)
 
     from sqlalchemy import select as _sa_select
     from vms.events.models import VmsEventModel
@@ -340,7 +347,7 @@ async def receive_pregenerated_event_clip(
     tenant_id = await db.scalar(
         _sa_select(VmsEventModel.tenant_id).where(VmsEventModel.id == event_id)
     )
-    if tenant_id is None:
+    if tenant_id is None or str(tenant_id) != str(resolved_tenant_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evento não encontrado")
 
     import tempfile

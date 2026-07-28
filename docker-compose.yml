@@ -259,6 +259,12 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      # Ver comentário equivalente em docker-compose.edge.yml (achado no
+      # smoke test de S6-06): `Orchestrator.start()` pode levar até ~100s
+      # (10 tentativas x 10s) pra listar câmeras antes do Uvicorn aceitar
+      # conexão — sem start_period isso é sinalizado como "unhealthy" por
+      # um startup normal (tenant sem câmera ainda), não uma falha real.
+      start_period: 150s
     networks: [next_sec]
 
   # ─── Frontend ─────────────────────────────────────────────────────────────

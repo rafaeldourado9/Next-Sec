@@ -118,6 +118,35 @@ class TestTaskRenderAndUploadEdgeClip:
         finally:
             await client.aclose()
 
+    async def test_vps_404_event_never_arrived_does_not_raise_retry(self, tmp_path) -> None:
+        """Cenário citado explicitamente na auditoria de S6-06: o evento
+        nunca chegou na VPS central (ex.: `POST /plugins/events` ainda está
+        na fila local do outbox do `analytics`, mas o worker de edge tentou
+        gerar/enviar o clipe antes da confirmação) — a VPS responde 404
+        porque `event_id` não existe. Mesmo tratamento dos demais 4xx: não é
+        best-effort reenfileirado (o evento pode nunca chegar, ou chegar com
+        outro id na próxima tentativa do outbox), só loga e desiste deste
+        clipe. Na prática este caso não deveria ocorrer no fluxo normal —
+        `_enqueue_local_clip_task` (analytics/core/vms_client.py) só
+        enfileira a task de clipe DEPOIS de `ingest_event` confirmar sucesso
+        — mas vale testar explicitamente porque é exatamente o tipo de
+        corrida que um retry manual/duplicado no outbox poderia reintroduzir."""
+        jpeg_path = str(tmp_path / "frame.jpg")
+        _write_test_jpeg(jpeg_path)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"detail": "Evento não encontrado"})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        ctx = {"http_client": client, "vms_api_url": "http://vps-central:8000", "vms_api_key": "test-key"}
+        try:
+            # Não deve levantar Retry nem qualquer outra exceção — best-effort.
+            await task_render_and_upload_edge_clip(
+                ctx=ctx, event_id="evt-nao-chegou-ainda", snapshot_local_path=jpeg_path,
+            )
+        finally:
+            await client.aclose()
+
     async def test_client_error_does_not_raise_retry(self, tmp_path) -> None:
         jpeg_path = str(tmp_path / "frame.jpg")
         _write_test_jpeg(jpeg_path)

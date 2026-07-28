@@ -210,3 +210,57 @@ class TestReceivePregeneratedClip:
             files={"clip_file": ("clip.mp4", b"x", "video/mp4")},
         )
         assert resp.status_code == 404
+
+    async def test_put_clip_rejects_api_key_from_another_tenant(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        tenant_a: TenantModel,
+        tenant_b: TenantModel,
+        camera_a: CameraModel,
+        monkeypatch,
+    ) -> None:
+        """Isolamento de tenant (ver test-contracts.md TC-005 / ADR-017 §1):
+        uma API key válida do tenant B nunca pode anexar um clipe a um evento
+        que pertence ao tenant A, mesmo que o `event_id` (UUID) vaze de algum
+        jeito (log, erro, etc.) — cada cliente Nível 1 tem sua própria API
+        key (ver `.env.edge.example`), então este é exatamente o cenário que
+        separaria um cliente do outro caso um deles seja comprometido.
+
+        Achado durante a auditoria de S6-06: `receive_pregenerated_event_clip`
+        chama `_resolve_plugin_tenant` só para validar que a API key existe,
+        mas descarta o tenant_id retornado e resolve o tenant do evento
+        direto da tabela `vms_events` — sem comparar os dois. Corrigido nesta
+        mesma task (ver `router.py`)."""
+        import uuid as _uuid
+
+        from vms.events.models import VmsEventModel
+        from vms.iam.models import ApiKeyModel
+        from vms.infrastructure.security import generate_api_key
+
+        plain_key, key_hash, prefix = generate_api_key()
+        db_session.add(
+            ApiKeyModel(
+                id=str(_uuid.uuid4()),
+                tenant_id=tenant_b.id,
+                owner_type="agent",
+                owner_id=str(_uuid.uuid4()),
+                key_hash=key_hash,
+                prefix=prefix,
+                is_active=True,
+            )
+        )
+
+        event = VmsEventModel(
+            id=str(_uuid.uuid4()), tenant_id=tenant_a.id, camera_id=camera_a.id,
+            event_type="intrusion.detected", payload={},
+        )
+        db_session.add(event)
+        await db_session.flush()
+
+        resp = await client.put(
+            f"/api/v1/plugins/events/{event.id}/clip",
+            headers={"Authorization": f"ApiKey {plain_key}"},
+            files={"clip_file": ("clip.mp4", b"fake-mp4-bytes", "video/mp4")},
+        )
+        assert resp.status_code == 404

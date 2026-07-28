@@ -13,6 +13,7 @@ Verifica que:
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -120,6 +121,111 @@ class TestIngestEventOutboxRetry:
         ok = await client.ingest_event(camera_id="cam-1", event_type="x", payload={})
         assert ok is False
         assert client._outbox.count_pending() == 0
+
+
+class _AlwaysDownTransport(httpx.MockTransport):
+    """Nunca responde com sucesso — simula a VPS central fora do ar por um
+    período prolongado (ex.: horas, não uma queda passageira) através do
+    túnel WireGuard do Nível 1."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        super().__init__(self._handler)
+
+    def _handler(self, request: httpx.Request) -> httpx.Response:
+        self.calls += 1
+        raise httpx.ConnectError("VPS inacessível", request=request)
+
+
+class TestOutboxUnboundedGrowth:
+    """Auditoria de S6-06 (ver ADR-017 §2): a fila SQLite não tem limite de
+    tamanho nem de idade — ao contrário de uma fila com TTL/tamanho máximo,
+    `EventOutbox` aceita `enqueue()` indefinidamente e `list_due()` nunca
+    descarta uma linha por ela ser "velha demais". Isso é aceitável para o
+    caso motivador (queda passageira de rede), mas é uma limitação real se a
+    VPS central ficar inacessível por muito tempo (horas/dias): o
+    `outbox.db` no volume `/data` do container `analytics` cresce sem
+    limite, sem nenhum aviso ou proteção de disco.
+
+    Este teste documenta o comportamento ATUAL (sem cap) com uma suíte real
+    de chamadas de rede falhando — não é uma correção, só uma rede de
+    segurança para que essa lacuna não passe despercebida se alguém no
+    futuro assumir por engano que existe uma proteção de tamanho/idade.
+    Ver relato desta auditoria em `.genesis/memory/progress.md` (Sprint 6).
+    """
+
+    async def test_outbox_accumulates_all_events_without_any_cap(self) -> None:
+        transport = _AlwaysDownTransport()
+        client = VMSClient()
+        # poll_interval alto: o loop de retry não deve conseguir escoar nada
+        # (a VPS segue fora do ar), então a contagem só cresce por causa dos
+        # `ingest_event` que chegam, não por corrida com o retry.
+        await client.start(transport=transport, retry_poll_interval=10.0)
+        try:
+            n_events = 50
+            for i in range(n_events):
+                ok = await client.ingest_event(
+                    camera_id=f"cam-{i}", event_type="intrusion.detected", payload={"i": i},
+                )
+                assert ok is True  # enfileirado, do ponto de vista do chamador
+
+            # Nenhuma linha é descartada por idade nem por a fila estar
+            # "grande demais" — todas as 50 continuam pendentes.
+            assert client._outbox.count_pending() == n_events
+        finally:
+            await client.close()
+
+    async def test_backlog_fully_drains_without_loss_or_duplication_once_network_recovers(
+        self,
+    ) -> None:
+        """Ainda que sem cap, a fila precisa continuar íntegra: quando a
+        rede volta depois de um backlog considerável, todos os eventos são
+        reenviados — nenhum perdido, nenhum duplicado.
+
+        Não exige ordem estrita de chegada (achado durante a auditoria de
+        S6-06, ao rodar isto com uma queda de rede real): `reschedule()`
+        (outbox.py) agenda `next_attempt_at` com backoff por item a partir
+        do instante da SUA própria falha, não de um relógio global — então
+        sob falha concorrente de vários itens, os que erraram por último
+        (menos tentativas acumuladas) podem ficar "devidos" antes dos que
+        erraram primeiro, e `run_retry_loop` reenvia fora da ordem de
+        enfileiramento. Isso é aceitável: cada evento carrega seu próprio
+        `occurred_at` (ver `Orchestrator._analytics_loop` em
+        `core/orchestrator.py`, `result.occurred_at.isoformat()`) — é essa
+        marca de tempo, não a ordem de chegada na API, que a VMS usa pra
+        ordenar a timeline de eventos (`api/src/vms/events/repository.py`).
+        Perda ou duplicação, sim, seriam bugs reais; ordem de entrega não é
+        uma garantia que o sistema precisa (nem oferece)."""
+        received: list[str] = []
+        down = {"value": True}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if down["value"]:
+                raise httpx.ConnectError("VPS inacessível", request=request)
+            body = json.loads(request.content)
+            received.append(body["camera_id"])
+            return httpx.Response(201, json={"id": f"evt-{body['camera_id']}"})
+
+        transport = httpx.MockTransport(handler)
+        client = VMSClient()
+        await client.start(transport=transport, retry_poll_interval=0.05)
+        try:
+            n_events = 20
+            expected = [f"cam-{i:02d}" for i in range(n_events)]
+            for camera_id in expected:
+                await client.ingest_event(
+                    camera_id=camera_id, event_type="intrusion.detected", payload={},
+                )
+            assert client._outbox.count_pending() == n_events
+
+            down["value"] = False  # VPS volta ao ar
+            reached_empty = await _wait_until(
+                lambda: client._outbox.count_pending() == 0, timeout=10.0
+            )
+            assert reached_empty, "backlog inteiro deveria escoar quando a rede volta"
+            assert sorted(received) == sorted(expected), "nenhum evento perdido ou duplicado"
+        finally:
+            await client.close()
 
 
 class TestLastKnownGoodCache:

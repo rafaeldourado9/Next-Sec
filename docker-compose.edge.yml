@@ -160,6 +160,16 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      # Achado real durante o smoke test de S6-06: `Orchestrator.start()`
+      # (core/orchestrator.py) tenta listar câmeras até 10x com 10s de
+      # espera entre tentativas ANTES do Uvicorn começar a aceitar conexão
+      # — e isso é justamente o cenário normal aqui (VPS central atrás do
+      # túnel WireGuard pode demorar a responder, ou o cliente ainda não
+      # tem câmera cadastrada). Sem start_period, `interval*retries` (90s)
+      # é menor que o pior caso do startup (~100s+), e o Docker marca o
+      # container "unhealthy" por um problema transitório de boot, não uma
+      # falha real (ele se recupera sozinho assim que o Uvicorn sobe).
+      start_period: 150s
     networks: [next_sec_edge]
 
   # ─── Worker de edge — SÓ geração/envio de clipe (EdgeWorkerSettings) ─────
