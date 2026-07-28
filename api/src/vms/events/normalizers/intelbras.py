@@ -152,8 +152,9 @@ class IntelbrasNormalizer:
             if snap_time:
                 timestamp = _parse_intelbras_datetime(snap_time)
 
-            # Extrai metadados de veículo de Picture.Plate antes de descartar o Picture
-            # (o JPEG em NormalPic.Content é grande demais para salvar no DB)
+            # Extrai metadados de veículo de Picture.Plate (mantido em
+            # vehicle_meta por retrocompatibilidade com quem já lê esses
+            # campos "achatados" no payload).
             vehicle_meta: dict = {}
             _vehicle_field_map = [
                 ("VehicleColor", "vehicle_color"),
@@ -169,6 +170,23 @@ class IntelbrasNormalizer:
                 if val not in (None, "", 0):
                     vehicle_meta[dst] = val
 
+            # NOTA (achado em produção): antes, todo o objeto "Picture" era
+            # descartado do raw_payload aqui pra não guardar o JPEG grande
+            # (NormalPic.Content) — só que isso jogava fora também
+            # Picture.Plate.Confidence/PlateNumber originais da câmera,
+            # tornando impossível auditar depois por que uma leitura veio
+            # com confiança 100% mesmo com a placa claramente truncada.
+            # Agora só o Content (o JPEG em si) é removido; o resto de
+            # Picture.Plate/SnapInfo (pequeno, é metadado) é preservado.
+            # O payload bruto completo (incluindo o JPEG) já fica no ledger
+            # imutável `raw_camera_events`, gravado antes da normalização —
+            # ver webhooks_public/router.py::_store_raw_ledger.
+            picture_meta = dict(pic)
+            if isinstance(picture_meta.get("NormalPic"), dict):
+                normal_pic_meta = dict(picture_meta["NormalPic"])
+                normal_pic_meta.pop("Content", None)
+                picture_meta["NormalPic"] = normal_pic_meta
+
             return AlprDetection(
                 camera_id=camera_id,
                 tenant_id=tenant_id,
@@ -178,6 +196,7 @@ class IntelbrasNormalizer:
                 timestamp=timestamp,
                 raw_payload={
                     **{k: v for k, v in raw.items() if k != "Picture"},
+                    "Picture": picture_meta,
                     **vehicle_meta,
                 },
                 image_b64=image_b64,

@@ -29,7 +29,7 @@ from sqlalchemy import select
 
 from vms.cameras.models import CameraModel
 from vms.infrastructure.database import get_session_factory, get_db_context
-from vms.events.models import VmsEventModel
+from vms.events.models import RawCameraEventModel, VmsEventModel
 from vms.events.normalizers.base import registry
 from vms.shared.api.rate_limit import limiter
 
@@ -415,6 +415,72 @@ async def _store_event(
         return event
 
 
+_MAX_LEDGER_STRING = 2000
+
+
+def _strip_large_strings(obj: object) -> object:
+    """Recorta valores string longos (JPEGs em base64) antes de gravar no
+    ledger — mantém a estrutura toda do payload (chaves/campos originais),
+    só troca o conteúdo binário grande por um marcador. Sem isso a tabela
+    incharia rápido (câmera manda imagem em quase todo evento) e sem
+    generalizar por nome de campo (formatos variam por fabricante/firmware).
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_large_strings(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_large_strings(v) for v in obj]
+    if isinstance(obj, str) and len(obj) > _MAX_LEDGER_STRING:
+        return f"<stripped:{len(obj)}b>"
+    return obj
+
+
+async def _store_raw_ledger(
+    tenant_id: str,
+    camera_id: str | None,
+    manufacturer: str,
+    source_ip: str | None,
+    body: dict,
+) -> str | None:
+    """Grava o payload bruto do webhook no ledger imutável, antes de
+    qualquer normalização. Best-effort: uma falha aqui nunca deve impedir
+    o processamento normal do evento (câmera não pode ficar em retry loop
+    por causa de um problema no log de auditoria)."""
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            row = RawCameraEventModel(
+                tenant_id=tenant_id,
+                camera_id=camera_id,
+                manufacturer=manufacturer,
+                source_ip=source_ip,
+                body=_strip_large_strings(body),
+            )
+            session.add(row)
+            await session.flush()
+            await session.refresh(row)
+            await session.commit()
+            return row.id
+    except Exception:
+        logger.exception("Falha ao gravar raw_camera_events (não crítico)")
+        return None
+
+
+async def _link_raw_ledger(raw_event_id: str | None, vms_event_id: str) -> None:
+    """Linka o registro do ledger ao evento processado — único UPDATE
+    permitido nessa tabela; o corpo capturado (`body`) nunca é alterado."""
+    if raw_event_id is None:
+        return
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            row = await session.get(RawCameraEventModel, raw_event_id)
+            if row is not None:
+                row.vms_event_id = vms_event_id
+                await session.commit()
+    except Exception:
+        logger.exception("Falha ao linkar raw_camera_events -> vms_events (não crítico)")
+
+
 async def _publish_sse(tenant_id: str, event_type: str, data: dict) -> None:
     """Publica evento no canal SSE do tenant."""
     try:
@@ -481,6 +547,7 @@ async def _handle_hikvision(request: Request, camera_id: str | None) -> dict:
         }
 
     tenant_id, cam_id = cam_info
+    raw_event_id = await _store_raw_ledger(tenant_id, cam_id, "hikvision", remote_ip, body)
 
     # Tenta normalizar como ANPR e usa EventService com dedup Redis
     normalizer = registry.get("hikvision")
@@ -505,6 +572,7 @@ async def _handle_hikvision(request: Request, camera_id: str | None) -> dict:
                 )
                 return {"ok": True, "event_id": None, "dedup": True}
 
+            await _link_raw_ledger(raw_event_id, event.id)
             logger.info("ANPR Hikvision | placa=%s camera=%s", detection.plate, cam_id)
             await _dispatch_alpr_notification(request, event, tenant_id, cam_id)
             return {"ok": True, "event_id": event.id}
@@ -519,6 +587,8 @@ async def _handle_hikvision(request: Request, camera_id: str | None) -> dict:
         event_type = f"hikvision_{body['EventNotificationAlert']['eventType']}"
 
     event = await _store_event(tenant_id, cam_id, event_type=event_type, payload=body)
+    if event is not None:
+        await _link_raw_ledger(raw_event_id, event.id)
     # Publica SSE para evento genérico
     await _publish_sse(tenant_id, event_type, {
         "camera_id": cam_id,
@@ -651,6 +721,7 @@ async def intelbras_webhook(
         return _itscam_ok(body)
 
     tenant_id, cam_id = cam_info
+    raw_event_id = await _store_raw_ledger(tenant_id, cam_id, "intelbras", remote_ip, body)
 
     normalizer = registry.get("intelbras")
     if normalizer and normalizer.can_handle(body):
@@ -678,6 +749,7 @@ async def intelbras_webhook(
                 )
                 return _itscam_ok(body)
 
+            await _link_raw_ledger(raw_event_id, event.id)
             logger.info("ANPR Intelbras | placa=%s camera=%s", detection.plate, cam_id)
             await _dispatch_alpr_notification(request, event, tenant_id, cam_id)
             return _itscam_ok(body)
@@ -691,12 +763,14 @@ async def intelbras_webhook(
         try:
             detection = smart_normalizer.normalize(body, cam_id, tenant_id)
             # Salva como VmsEvent genérico (não é ALPR, logo não precisa de dedup de placa)
-            await _store_event(
+            event = await _store_event(
                 tenant_id, cam_id,
                 event_type=detection.raw_payload.get("event") or "intelbras_smart_event",
                 payload=detection.raw_payload,
                 confidence=detection.confidence or None,
             )
+            if event is not None:
+                await _link_raw_ledger(raw_event_id, event.id)
             logger.info("Smart Event Intelbras | tipo=%s camera=%s", detection.raw_payload.get("event"), cam_id)
             return _itscam_ok(body)
         except Exception as exc:
@@ -719,6 +793,8 @@ async def intelbras_webhook(
         plate=str(plate) if plate else None,
         confidence=float(confidence) if confidence else None,
     )
+    if event is not None:
+        await _link_raw_ledger(raw_event_id, event.id)
     # Publica SSE para evento genérico
     await _publish_sse(tenant_id, event_type, {
         "camera_id": cam_id,
@@ -751,6 +827,7 @@ async def generic_camera_webhook(
         return {"ok": False, "reason": "camera_not_found"}
 
     tenant_id, cam_id = cam_info
+    raw_event_id = await _store_raw_ledger(tenant_id, cam_id, "generic", remote_ip, body)
 
     for mfr, normalizer in registry._normalizers.items():
         if normalizer.can_handle(body):
@@ -768,6 +845,7 @@ async def generic_camera_webhook(
                 if event is None:
                     return {"ok": True, "manufacturer": mfr, "event_id": None, "dedup": True}
 
+                await _link_raw_ledger(raw_event_id, event.id)
                 await _dispatch_alpr_notification(request, event, tenant_id, cam_id)
                 return {"ok": True, "manufacturer": mfr, "event_id": event.id}
             except Exception as exc:
@@ -784,6 +862,8 @@ async def generic_camera_webhook(
         plate=str(plate) if plate else None,
         confidence=float(confidence) if confidence else None,
     )
+    if event is not None:
+        await _link_raw_ledger(raw_event_id, event.id)
     # Publica SSE para evento genérico
     await _publish_sse(tenant_id, f"camera_{event_type}", {
         "camera_id": cam_id,
