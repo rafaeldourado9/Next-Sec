@@ -201,15 +201,27 @@ async def task_dispatch_event_notifications(
         if not snapshot_path:
             return
 
-        try:
-            from vms.event_clips.service import build_event_clip_service
+        # Kill switch temporário (ver ADR-016): geração de clipe via ffmpeg é
+        # a parte pesada que sobrecarregou a VPS compartilhada mesmo depois
+        # dos fixes de sessão — desativável sem rebuild até a migração pro
+        # edge (Docker dedicado / agent nativo) estar pronta. Não afeta a
+        # notificação em si (foto do snapshot + texto), que é leve e roda
+        # logo abaixo independente desta flag.
+        if os.getenv("ENABLE_EVENT_CLIPS", "true").lower() == "true":
+            try:
+                from vms.event_clips.service import build_event_clip_service
 
-            await build_event_clip_service(db).generate_and_upload(
-                vms_event_id=event_id, tenant_id=tenant_id, image_path=snapshot_path,
+                await build_event_clip_service(db).generate_and_upload(
+                    vms_event_id=event_id, tenant_id=tenant_id, image_path=snapshot_path,
+                )
+            except Exception:
+                logger.exception("Falha ao gerar clipe do evento %s (não crítico)", event_id)
+                await db.rollback()
+        else:
+            logger.info(
+                "Geração de clipe desativada (ENABLE_EVENT_CLIPS=false) — evento %s sem clipe",
+                event_id,
             )
-        except Exception:
-            logger.exception("Falha ao gerar clipe do evento %s (não crítico)", event_id)
-            await db.rollback()
 
         try:
             from vms.notifications.service import build_notification_service
