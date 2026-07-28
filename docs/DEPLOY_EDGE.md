@@ -72,18 +72,29 @@ As câmeras do cliente publicam RTSP/RTMP direto para o `mediamtx` local
 os frames pela rede interna do Docker (`next_sec_edge`), nunca via
 internet.
 
-## 6. Limitações conhecidas (não resolvidas neste sprint)
+`infra/mediamtx/mediamtx.yml` é um template (`authHTTPAddress` e os hooks
+`runOnReady`/`runOnNotReady`/`runOnRecordSegmentComplete`) — o
+`entrypoint.sh` da imagem resolve o placeholder `__VMS_HOOKS_BASE_URL__`
+no start do container a partir da env `VMS_HOOKS_BASE_URL`, que este
+compose já define como o mesmo valor de `VMS_API_URL` (a VPS central via o
+túnel WireGuard). Nada a configurar aqui além do que já está na seção 2.
 
-- **`infra/mediamtx/mediamtx.yml` hardcoded para `http://api:8000`** —
-  `authHTTPAddress` e os hooks `runOnReady`/`runOnNotReady`/
-  `runOnRecordSegmentComplete` só resolvem dentro da rede do compose
-  central (onde existe um container `api`). Este compose de edge não tem
-  `api` local por desenho (ADR-017 §3) — esses hooks precisam apontar para
-  a VPS central via o mesmo túnel WireGuard que `VMS_API_URL` usa. Corrigir
-  exige parametrizar `mediamtx.yml` (env var ou templating no entrypoint)
-  — mudança em `infra/mediamtx/`, fora do escopo do reempacotamento do
-  compose (S6-05). **Não fazer deploy real em cliente Nível 1 sem resolver
-  isto primeiro** se o cliente usa autenticação de câmera via MediaMTX.
+## 6. Teste E2E real (worker gera um clipe de verdade)
+
+```bash
+infra/scripts/e2e-test-edge.sh
+```
+
+Sobe a stack de verdade, escreve um snapshot JPEG real no volume
+compartilhado, enfileira o job ARQ `task_render_and_upload_edge_clip` no
+Redis da própria stack (o mesmo caminho que o `analytics` usa depois de um
+`ingest_event` confirmado) e confirma que o worker roda **ffmpeg de
+verdade** e envia um MP4 real (assinatura `ftyp`) — só a VPS central é
+mockada (um servidor HTTP mínimo que recebe o `PUT .../clip`). Falha com
+logs do worker/mock se o clipe não chegar dentro do timeout.
+
+## 7. Limitações conhecidas (não resolvidas neste sprint)
+
 - **Fila de retry (`EventOutbox`, SQLite) sem cap de tamanho/idade** —
   aceitável para o caso motivador (queda passageira de rede), mas se a VPS
   central ficar inacessível por muito tempo (horas/dias), `outbox.db` no
@@ -109,3 +120,5 @@ internet.
       e corrigidos (isolamento de tenant no `PUT .../clip`; healthcheck do
       `analytics` sem `start_period`)
 - [x] S6-07 Este documento + progress/state atualizados
+- [x] Pós-S6-07: `mediamtx.yml` parametrizado (era limitação conhecida) +
+      `e2e-test-edge.sh` (worker gera clipe real via ffmpeg na stack viva)
