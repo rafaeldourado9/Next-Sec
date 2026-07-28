@@ -38,6 +38,34 @@ foreach ($f in $requiredFiles) {
     }
 }
 
+# --- Para/remove instalacao anterior ANTES de copiar arquivos -----------------
+# Precisa vir antes do Copy-Item: se o servico antigo ainda estiver rodando,
+# ele mantem next-sec-agent.exe aberto e o Copy-Item falha com
+# "being used by another process".
+$existingAgentSvc = Get-Service "NextSecAgent" -ErrorAction SilentlyContinue
+if ($existingAgentSvc) {
+    Write-Host "Servico do agent ja existe -- parando antes de sobrescrever arquivos..."
+    $nssmExisting = "$installDir\nssm.exe"
+    # nssm escreve em stderr mesmo em operacoes normais (ex: "service not
+    # started" ao tentar parar um servico que nunca rodou) -- redirecionar
+    # stderr faz o PowerShell embrulhar isso num NativeCommandError e, com
+    # $ErrorActionPreference=Stop, aborta o script por um aviso inofensivo.
+    # Sem redirecionar, e so texto no console, nao interrompe nada.
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    if (Test-Path $nssmExisting) {
+        & $nssmExisting stop NextSecAgent
+        Start-Sleep -Seconds 2
+        & $nssmExisting remove NextSecAgent confirm
+    } else {
+        Stop-Service NextSecAgent -Force
+        Start-Sleep -Seconds 2
+        sc.exe delete NextSecAgent | Out-Null
+    }
+    $ErrorActionPreference = $prevPref
+    Start-Sleep -Seconds 1
+}
+
 Copy-Item "$scriptDir\next-sec-agent.exe" "$installDir\next-sec-agent.exe" -Force
 Copy-Item "$scriptDir\nssm.exe" "$installDir\nssm.exe" -Force
 Copy-Item "$scriptDir\config.env" "$installDir\config.env" -Force
@@ -66,22 +94,6 @@ Write-Host "Registrando tunel WireGuard..."
 Start-Sleep -Seconds 2
 
 # --- Servico do agent (via NSSM) ----------------------------------------------
-$existingAgent = Get-Service "NextSecAgent" -ErrorAction SilentlyContinue
-if ($existingAgent) {
-    Write-Host "Servico do agent ja existe -- removendo versao anterior antes de reinstalar..."
-    # nssm escreve em stderr mesmo em operacoes normais (ex: "service not
-    # started" ao tentar parar um servico que nunca rodou) -- redirecionar
-    # stderr faz o PowerShell embrulhar isso num NativeCommandError e, com
-    # $ErrorActionPreference=Stop, aborta o script por um aviso inofensivo.
-    # Sem redirecionar, e so texto no console, nao interrompe nada.
-    $prevPref = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    & $nssm stop NextSecAgent
-    Start-Sleep -Seconds 2
-    & $nssm remove NextSecAgent confirm
-    $ErrorActionPreference = $prevPref
-}
-
 Write-Host "Registrando servico do agent..."
 & $nssm install NextSecAgent "$installDir\next-sec-agent.exe"
 & $nssm set NextSecAgent AppDirectory $installDir
