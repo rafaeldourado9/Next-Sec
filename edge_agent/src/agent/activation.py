@@ -17,6 +17,7 @@ import os
 import platform
 import stat
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -182,28 +183,60 @@ class CredentialStore:
         self.save(current)
 
     def _restrict_permissions(self) -> None:
-        """Só SYSTEM+Administradores (Windows) / só o dono (Unix)."""
+        """Só SYSTEM+Administradores (Windows) / só o dono (Unix).
+
+        Retorna silenciosamente em caso de falha **não** era aceitável: ao
+        testar contra a VPS real, `icacls` falhou sem elevação e o `agent.json`
+        ficou legível por `BUILTIN\\Usuários` — qualquer conta da máquina lia a
+        API key. O aviso ia pro logger, que o CLI nem configura, então ninguém
+        via. Agora o resultado é verificado e o problema aparece na saída.
+        """
         if platform.system() == "Windows":
-            try:
-                # `/inheritance:r` é o que importa: sem remover a herança, as
-                # ACLs permissivas de `%ProgramData%` continuariam valendo e os
-                # grants abaixo não restringiriam nada.
-                subprocess.run(
-                    ["icacls", str(self._path), "/inheritance:r",
-                     "/grant:r", "SYSTEM:F", "/grant:r", "Administrators:F"],
-                    capture_output=True, timeout=15, check=False,
-                )
-            except Exception:
-                logger.warning(
-                    "Não foi possível restringir as permissões de %s — o arquivo contém "
-                    "a credencial desta instalação", self._path, exc_info=True,
-                )
+            self._restrict_windows()
             return
 
         try:
             os.chmod(self._path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
-            logger.warning("Não foi possível aplicar chmod 600 em %s", self._path, exc_info=True)
+            self._warn_permissions("não foi possível aplicar chmod 600")
+
+    def _restrict_windows(self) -> None:
+        # Os nomes dos grupos são localizados (Administrators/Administradores),
+        # mas os SIDs não: S-1-5-18 = SYSTEM, S-1-5-32-544 = Administradores.
+        # Usar o nome quebraria em Windows não-inglês — que é o caso do
+        # cliente. `/inheritance:r` é o que importa: sem remover a herança, as
+        # ACLs permissivas de `%ProgramData%` continuam valendo e os grants
+        # abaixo não restringem nada.
+        try:
+            result = subprocess.run(
+                ["icacls", str(self._path), "/inheritance:r",
+                 "/grant:r", "*S-1-5-18:F", "/grant:r", "*S-1-5-32-544:F"],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+        except Exception:
+            self._warn_permissions("icacls não pôde ser executado")
+            return
+
+        if result.returncode != 0:
+            self._warn_permissions(
+                f"icacls falhou ({result.returncode}): {(result.stderr or '').strip()[:200]}"
+            )
+
+    def _warn_permissions(self, detail: str) -> None:
+        """Avisa no log **e** na saída padrão.
+
+        Duplicar na saída é deliberado: quem roda a ativação é o instalador, e
+        um segredo de longa duração ficando legível por qualquer conta da
+        máquina não pode passar despercebido só porque o logger não estava
+        configurado.
+        """
+        message = (
+            f"AVISO: {detail}. O arquivo {self._path} contém a credencial desta "
+            f"instalação e pode estar legível por outros usuários desta máquina. "
+            f"Rode o instalador como administrador."
+        )
+        logger.warning(message)
+        print(message, file=sys.stderr)
 
 
 async def activate(

@@ -154,6 +154,12 @@ services:
       - WG_CONTROL_TOKEN=${WG_CONTROL_TOKEN:-dev-wg-control-key}
       - WG_PUBLIC_ENDPOINT=${WG_PUBLIC_ENDPOINT:-localhost:51820}
       - WG_SUBNET=${WG_SUBNET:-10.60.0.0/24}
+      # Endereços PÚBLICOS devolvidos na ativação por licença (ADR-018 §1).
+      # Não confundir com MEDIAMTX_RTMP_URL/localhost acima, que são nomes da
+      # rede Docker interna: quem recebe estes valores é um agente rodando na
+      # casa do cliente, para quem `mediamtx` e `localhost` não existem.
+      - EDGE_PUBLIC_API_URL=${EDGE_PUBLIC_API_URL:-http://localhost:8000}
+      - RTMP_PUBLIC_URL=${RTMP_PUBLIC_URL:-rtmp://localhost:1935}
     volumes:
       - ./api:/app
       - snapshots:/snapshots
