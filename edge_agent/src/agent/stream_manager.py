@@ -4,13 +4,26 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import time
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-# Constantes
-_MAX_RESTART_ATTEMPTS = 5
-_RESTART_DELAY_SECONDS = 5.0
+# Backoff exponencial com teto, retry indefinido — mesmo padrão já usado em
+# `analytics/core/outbox.py` (5s, 10s, 20s... até 5min). Até 2026-08-02 este
+# módulo desistia de vez depois de `_MAX_RESTART_ATTEMPTS` tentativas com
+# delay fixo (25s de janela total) — achado testando uma câmera Wi-Fi real:
+# a conexão RTSP cai por instabilidade de rede (comum em câmera doméstica),
+# se recupera sozinha minutos depois, mas o agent já tinha desistido pra
+# sempre daquela câmera até alguém reiniciar o serviço inteiro. Nenhum
+# cliente real deveria depender de reiniciar o agent porque o Wi-Fi da
+# câmera piscou.
+_INITIAL_RESTART_DELAY_SECONDS = 5.0
+_MAX_RESTART_DELAY_SECONDS = 300.0
+# Últimos N bytes do stderr do ffmpeg mantidos em memória por processo —
+# o bastante pra uma mensagem de erro típica, sem acumular um vazamento se
+# o processo rodar (e falhar) por muito tempo.
+_STDERR_TAIL_BYTES = 4096
 
 
 @dataclass
@@ -22,6 +35,14 @@ class StreamProcess:
     rtmp_url: str
     process: asyncio.subprocess.Process | None = None
     restart_count: int = 0
+    # Timestamp monotônico (`time.monotonic()`) de quando a próxima
+    # tentativa é permitida — backoff sem bloquear `restart_dead_streams`
+    # (ver nota em `restart_dead_streams`).
+    next_retry_at: float = 0.0
+    # Últimas linhas do stderr do ffmpeg — só existe pra aparecer no log
+    # quando o processo morre; nunca lido em operação normal.
+    _stderr_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    _stderr_tail: bytes = field(default=b"", init=False, repr=False)
     _running: bool = field(default=False, init=False)
 
     @property
@@ -124,23 +145,62 @@ class StreamManager:
             await self.start_stream(camera_id, rtsp_url, mediamtx_path)
 
     async def restart_dead_streams(self) -> None:
-        """Reinicia processos ffmpeg que morreram inesperadamente."""
+        """Reinicia processos ffmpeg que morreram inesperadamente.
+
+        Backoff exponencial com teto (5s → 10s → 20s... até 5min),
+        **nunca desiste de vez**: uma câmera Wi-Fi instável se recupera
+        sozinha minutos depois, e nenhum cliente deveria precisar reiniciar
+        o serviço inteiro porque uma câmera piscou (achado testando uma
+        câmera doméstica real — ver nota em `_INITIAL_RESTART_DELAY_SECONDS`).
+
+        Não bloqueia com `sleep`: cada câmera guarda seu próprio
+        `next_retry_at` e é pulada até a hora chegar. Um `sleep` aqui dentro
+        atrasaria a checagem de TODAS as outras câmeras no mesmo ciclo —
+        inofensivo com o delay fixo antigo (5s), mas seria grave com o teto
+        de 5min desta versão.
+        """
+        now = time.monotonic()
         for camera_id, sp in list(self._streams.items()):
             if sp.process is None:
                 continue
-            if sp.process.returncode is not None and sp._running:
+
+            if sp._running:  # noqa: SLF001
+                if sp.process.returncode is None:
+                    continue  # ainda rodando normalmente
+
+                # Acabou de morrer nesta checagem — registra e agenda a
+                # próxima tentativa, mas não relança no mesmo ciclo (o
+                # health_checker roda de novo em 10s; esperar por ele em
+                # vez de um `sleep` aqui evita atrasar a checagem das
+                # outras câmeras neste mesmo `restart_dead_streams`).
+                tail = sp._stderr_tail.decode("utf-8", errors="replace").strip()  # noqa: SLF001
                 logger.warning(
-                    "ffmpeg morreu para câmera %s (código %s) — reiniciando",
-                    camera_id,
-                    sp.process.returncode,
+                    "ffmpeg morreu para câmera %s (código %s)%s",
+                    camera_id, sp.process.returncode,
+                    f" — stderr: {tail[-500:]}" if tail else "",
                 )
                 sp._running = False  # noqa: SLF001
-                if sp.restart_count >= _MAX_RESTART_ATTEMPTS:
-                    logger.error("Câmera %s atingiu limite de reinicializações", camera_id)
-                    continue
-                await asyncio.sleep(_RESTART_DELAY_SECONDS)
-                sp.restart_count += 1
-                await self._launch(sp)
+                # `min(sp.restart_count, 6)` no expoente: acima disso o
+                # delay já bateu no teto de qualquer forma (2**6*5s=320s >
+                # 300s), e sem o cap, um expoente crescendo por dias de
+                # falha contínua eventualmente estoura (`OverflowError` ao
+                # converter um int gigante pra float) — sem necessidade,
+                # já que o resultado seria descartado pelo `min` de fora.
+                delay = min(
+                    _INITIAL_RESTART_DELAY_SECONDS * (2 ** min(sp.restart_count, 6)),
+                    _MAX_RESTART_DELAY_SECONDS,
+                )
+                sp.next_retry_at = now + delay
+                logger.info("Câmera %s: nova tentativa em %.0fs", camera_id, delay)
+                continue
+
+            # Já estava marcado como morto de um ciclo anterior — só
+            # relança quando o backoff tiver vencido.
+            if now < sp.next_retry_at:
+                continue
+
+            sp.restart_count += 1
+            await self._launch(sp)
 
     async def _launch(self, sp: StreamProcess) -> None:
         """Lança o processo ffmpeg para um StreamProcess."""
@@ -165,6 +225,8 @@ class StreamManager:
                 stderr=asyncio.subprocess.PIPE,
             )
             sp._running = True  # noqa: SLF001
+            sp._stderr_tail = b""  # noqa: SLF001
+            sp._stderr_task = asyncio.create_task(self._drain_stderr(sp))  # noqa: SLF001
             logger.info(
                 "ffmpeg iniciado para câmera %s → %s (pid=%s)",
                 sp.camera_id,
@@ -176,9 +238,30 @@ class StreamManager:
             sp._running = False  # noqa: SLF001
 
     @staticmethod
+    async def _drain_stderr(sp: StreamProcess) -> None:
+        """Lê o stderr do ffmpeg continuamente, guardando só o final.
+
+        Duas razões pra existir, não só diagnóstico: um pipe do SO tem
+        buffer limitado (tipicamente 64KB) — se ninguém lê o stderr, o
+        ffmpeg pode travar esperando espaço pra escrever nele assim que o
+        buffer enche. Sem isto, a mensagem de erro real (ex.: o `-10054`
+        que expôs o gap de retry-para-sempre acima) nunca aparecia em
+        lugar nenhum — só foi possível descobrir reproduzindo o comando na
+        mão fora do agent.
+        """
+        assert sp.process is not None and sp.process.stderr is not None
+        try:
+            async for line in sp.process.stderr:
+                sp._stderr_tail = (sp._stderr_tail + line)[-_STDERR_TAIL_BYTES:]  # noqa: SLF001
+        except Exception:
+            pass
+
+    @staticmethod
     async def _terminate(sp: StreamProcess) -> None:
         """Encerra um processo ffmpeg graciosamente."""
         sp._running = False  # noqa: SLF001
+        if sp._stderr_task is not None:  # noqa: SLF001
+            sp._stderr_task.cancel()  # noqa: SLF001
         if sp.process is None:
             return
         try:
