@@ -430,7 +430,7 @@ services:
           if gunzip -c $$DEST 2>/dev/null | tail -5 | grep -q 'PostgreSQL database dump complete'; then
             echo \"[$$(date)] Backup OK ($$(du -h $$DEST | cut -f1))\";
             find /backups -name 'nextsec-backup-*' -mtime +$$RETENTION_DAYS -delete;
-            echo '[$$(date)] Backups antigos removidos';
+            echo \"[$$(date)] Backups antigos removidos\";
           else
             echo \"[$$(date)] BACKUP FALHOU: dump incompleto. Removendo $$DEST e PRESERVANDO os anteriores.\";
             rm -f $$DEST;
