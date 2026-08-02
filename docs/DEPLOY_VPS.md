@@ -142,33 +142,34 @@ curl https://nextsec.seudominio.com/api/v1/health   # de fora, via nginx do Fast
 
 Confirmar `db=ok`, `redis=ok`, `rabbitmq=ok` na resposta.
 
-## 8. Pendências de segurança (confirmadas em produção)
+## 8. Pendências de segurança
+
+### 8.1 Painéis de administração abertos na internet — ✅ CORRIGIDO (2026-08-02)
 
 Este aviso existia desde o Sprint 5 como "revisar antes de ir ao ar". Em
-2026-08-02 as exposições foram **verificadas de fora da VPS** e estão ativas
-agora. Não é mais uma observação preventiva.
+2026-08-02 as exposições foram **verificadas de fora da VPS** e estavam
+ativas:
 
-### 8.1 Painéis de administração abertos na internet
+| Porta | Serviço | Antes | Depois |
+|---|---|---|---|
+| `9001` | Console admin do MinIO | **HTTP 200 público** | fechada |
+| `15672` | Management do RabbitMQ | **HTTP 200 público** | fechada |
+| `9000` | API do MinIO | aberta (403) | fechada |
+| `8554` | RTSP do MediaMTX | aberta | fechada |
 
-Testado de fora, contra `vm-server.duckdns.org`:
+**Correção aplicada:** amarradas a `127.0.0.1` no `docker-compose.yml`, em
+vez de removidas. Continuam funcionando em dev (é assim que se acessa de
+qualquer jeito) e, na VPS, ficam acessíveis por túnel SSH:
 
-| Porta | Serviço | Resposta externa |
-|---|---|---|
-| `9001` | Console admin do MinIO | **HTTP 200** |
-| `15672` | Management do RabbitMQ | **HTTP 200** |
-| `9000` | API do MinIO | HTTP 403 (aberta, exige credencial) |
-| `8554` | RTSP do MediaMTX | Aberta |
+```bash
+ssh -L 15672:127.0.0.1:15672 -L 9001:127.0.0.1:9001 root@2.25.180.57
+```
 
-As credenciais são fortes (geradas com `openssl rand`), mas painéis de
-administração não deveriam estar acessíveis publicamente — nenhum fluxo do
-produto depende disso.
+Nada do produto consome essas portas pelo host — a API fala com o MinIO pela
+rede interna do Docker (`MINIO_ENDPOINT=http://minio:9000`).
 
-**Correção:** zerar a publicação dessas portas no compose (mesmo padrão
-`ports: !reset []` já usado no nginx). Nada quebra: o MinIO é consumido pela
-API pela rede interna do Docker, e o RabbitMQ management é ferramenta de
-diagnóstico.
-
-A porta `1935` (RTMP) deixa de ser necessária com a
+Portas públicas restantes: `80`/`443` (nginx), `1935` (RTMP) e `51820`
+(WireGuard). A `1935` deixa de ser necessária com a
 [ADR-019](../../.genesis/architecture/adrs/019-edge-first-vps-events-only.md)
 — o vídeo passa a não atravessar mais a VPS.
 
@@ -183,6 +184,52 @@ de produção).
 O comportamento é fail-closed, então **não é uma brecha** — é uma
 funcionalidade que nunca funcionou. A ADR-019 resolve por remoção: o caminho
 de vídeo até a VPS deixa de existir.
+
+> **Consequência ainda não tratada:** o mesmo `authHTTPAddress` valida também
+> a **leitura** (HLS/WebRTC). Ou seja, assistir vídeo através da VPS também
+> está quebrado hoje — o que é coerente com a ADR-019 (visualização passa a
+> ser local), mas significa que **o setup Nível 3** (VPS ingere direto de uma
+> câmera com IP público e serve o vídeo) **não funciona**. Se Nível 3 for um
+> cenário a suportar, o endpoint precisa ser implementado. Não foi feito
+> porque a ADR-019 torna esse caminho secundário.
+>
+> O `mediamtx.yml` é **compartilhado** entre VPS e edge, então o edge herda o
+> mesmo `authHTTPAddress` apontando para a VPS. Isso merece revisão quando a
+> visualização local for implementada: fazer a ingestão de vídeo **local**
+> depender de um endpoint **remoto** contradiz "funciona offline" — se a
+> internet cair, o cliente não conseguiria nem assistir às próprias câmeras.
+
+### 8.5 Camera de agent provisionada no MediaMTX central — ✅ CORRIGIDO (2026-08-02)
+
+Câmera `rtsp_pull` vinculada a um agent recebia um path no MediaMTX
+**central** com `source` apontando para o RTSP dela — tipicamente um IP de
+LAN inalcançável da VPS. Efeito: `dial tcp 192.168.0.101:554: i/o timeout`
+em loop indefinido, e duas conexões RTSP disputando a mesma câmera.
+
+Corrigido em `Camera.is_edge_managed`, aplicado nos quatro pontos que
+provisionavam (`create_camera`, `update_camera`, o watchdog de `tasks.py` que
+recriava o path a cada 30 s, e o loop de boot da API).
+
+**Atenção ao aplicar:** `api` e `worker` são **imagens separadas**. Rebuildar
+só a `api` deixa o watchdog antigo rodando no worker, que continua recriando
+o path a cada ciclo:
+
+```bash
+docker compose build api worker && docker compose up -d api worker
+```
+
+Paths legados (de câmeras criadas antes da correção) não somem sozinhos —
+precisam ser removidos uma vez:
+
+```bash
+docker compose exec -T api python -c "
+import asyncio, httpx
+async def m():
+    async with httpx.AsyncClient(timeout=5.0) as c:
+        r = await c.delete('http://mediamtx:9997/v3/config/paths/delete/<path>')
+        print(r.status_code)
+asyncio.run(m())"
+```
 
 ### 8.3 Chave de API compartilhada resolve tenant arbitrário
 
@@ -202,14 +249,45 @@ existe desde a ADR-018; este atalho é herança do modelo single-tenant.
 ### 8.4 Serviços de produção não iniciados
 
 O deploy de 2026-08-02 subiu um subconjunto: `postgres redis rabbitmq minio
-mediamtx api worker frontend nginx`. **Não estão rodando:**
+mediamtx api worker frontend nginx`.
 
-- `backup-scheduler` — **não há backup do banco**. Inaceitável antes de
-  qualquer cliente real.
-- `analytics` — nenhuma detecção acontece na VPS (esperado pela ADR-019, que
-  move isso para o edge, mas hoje significa que não há detecção em lugar
-  nenhum).
-- `arcanum` — nenhuma notificação de WhatsApp sai.
+- `backup-scheduler` — ✅ **iniciado em 2026-08-02.** Ver §9.
+- `analytics` — **não roda.** Nenhuma detecção acontece na VPS. É o esperado
+  pela ADR-019 (que move a detecção para o edge), mas hoje significa que não
+  há detecção em lugar nenhum: o agente nativo ainda só faz relay.
+- `arcanum` — **não roda.** Nenhuma notificação de WhatsApp sai.
+
+## 9. Backup do banco
+
+`backup-scheduler` roda um `pg_dump` a cada 24 h em `/backups` (volume
+nomeado `backups`), com retenção de `BACKUP_RETENTION_DAYS` (default 7).
+
+**O dump é verificado antes de ser considerado um backup.** A versão original
+fazia `pg_dump | gzip > arquivo` e seguia em frente — num pipe, o exit status
+é o do último comando (`gzip`), não o do `pg_dump`. Um dump que falhasse
+produzia um `.gz` válido com conteúdo truncado, e o `find -delete` logo
+abaixo rotacionava os backups **bons** para fora, mantendo só os quebrados.
+Verificado num container real: com o banco inacessível, o pipe retorna exit 0
+e cria um arquivo de 20 bytes.
+
+Hoje o script confere o rodapé que o `pg_dump` só escreve se chegou ao fim.
+Em caso de falha, remove o arquivo ruim e **preserva** os anteriores.
+
+### Restaurar
+
+```bash
+# Listar backups disponíveis
+docker compose exec backup-scheduler ls -lh /backups/
+
+# Restaurar num banco descartável primeiro (sempre — nunca direto em produção)
+docker compose exec -T postgres psql -U vms -d postgres -c "CREATE DATABASE restore_test;"
+docker compose exec -T backup-scheduler sh -c "gunzip -c /backups/<arquivo>.sql.gz" \
+  | docker compose exec -T postgres psql -U vms -d restore_test
+```
+
+Restauração validada em 2026-08-02: 24 tabelas, `alembic_version = 0015`,
+dados de licença preservados. **Um backup que nunca foi restaurado não é um
+backup** — vale repetir esse teste periodicamente.
 
 ## Próximos passos (Sprint 5)
 

@@ -59,8 +59,16 @@ async def _provision_mediamtx_paths() -> None:
     try:
         factory = get_session_factory()
         async with factory() as session:
+            # `agent_id.is_(None)`: câmera de agent é tratada no edge
+            # (ADR-019 §1) — a VPS não puxa nem serve o stream dela, então
+            # não há path a provisionar aqui. Sem este filtro, todo boot da
+            # API recriava o path com source de LAN e reiniciava o loop de
+            # `i/o timeout` no MediaMTX central.
             result = await session.execute(
-                select(CameraModel).where(CameraModel.is_active.is_(True))
+                select(CameraModel).where(
+                    CameraModel.is_active.is_(True),
+                    CameraModel.agent_id.is_(None),
+                )
             )
             cameras = result.scalars().all()
 

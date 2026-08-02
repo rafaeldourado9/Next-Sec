@@ -454,6 +454,25 @@ class Camera(AggregateRoot):
         return f"tenant-{self.tenant_id}/cam-{self.id}"
 
     @property
+    def is_edge_managed(self) -> bool:
+        """True quando o vídeo desta câmera é tratado no hardware do cliente.
+
+        Câmera vinculada a um agent tem captura, gravação e exibição feitas
+        localmente (ADR-019 §1) — a VPS não puxa nem serve o stream dela, e
+        portanto **não deve provisionar path no MediaMTX central**.
+
+        Sem essa distinção, a API provisionava um path central com `source`
+        apontando para o RTSP da câmera, que costuma ser um IP de LAN
+        inalcançável da VPS. Efeito observado em produção (2026-08-02):
+        `dial tcp 192.168.0.101:554: i/o timeout` em loop indefinido nos logs
+        do MediaMTX central, disputando a câmera com o agent que já a estava
+        lendo corretamente de dentro da LAN — duas conexões RTSP simultâneas
+        na mesma câmera, sendo que muitos modelos domésticos não toleram bem
+        isso.
+        """
+        return self.agent_id is not None
+
+    @property
     def has_location(self) -> bool:
         """Verifica se câmera tem coordenadas geográficas."""
         return self.latitude is not None and self.longitude is not None

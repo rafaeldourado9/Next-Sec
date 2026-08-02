@@ -50,7 +50,11 @@ async def task_camera_watchdog(ctx: dict) -> None:
                 source_url = cam.rtsp_url or ""
             entry = by_name.get(mediamtx_path)
 
-            if entry is None and source_url:
+            # `cam.agent_id` → câmera tratada no edge (ADR-019 §1): a VPS não
+            # puxa o stream dela. Sem esta checagem, o watchdog "curava" de
+            # volta, a cada ciclo, exatamente o path com source de LAN que
+            # causava o loop de `i/o timeout` nos logs do MediaMTX central.
+            if entry is None and source_url and not cam.agent_id:
                 # Path ausente após restart do MediaMTX — re-provisiona.
                 # Precisa passar recording_enabled/retention_days — senão um
                 # restart do MediaMTX faria o watchdog "curar" o path só com
