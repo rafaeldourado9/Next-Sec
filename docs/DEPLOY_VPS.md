@@ -185,6 +185,52 @@ O comportamento é fail-closed, então **não é uma brecha** — é uma
 funcionalidade que nunca funcionou. A ADR-019 resolve por remoção: o caminho
 de vídeo até a VPS deixa de existir.
 
+> **Consequência ainda não tratada:** o mesmo `authHTTPAddress` valida também
+> a **leitura** (HLS/WebRTC). Ou seja, assistir vídeo através da VPS também
+> está quebrado hoje — o que é coerente com a ADR-019 (visualização passa a
+> ser local), mas significa que **o setup Nível 3** (VPS ingere direto de uma
+> câmera com IP público e serve o vídeo) **não funciona**. Se Nível 3 for um
+> cenário a suportar, o endpoint precisa ser implementado. Não foi feito
+> porque a ADR-019 torna esse caminho secundário.
+>
+> O `mediamtx.yml` é **compartilhado** entre VPS e edge, então o edge herda o
+> mesmo `authHTTPAddress` apontando para a VPS. Isso merece revisão quando a
+> visualização local for implementada: fazer a ingestão de vídeo **local**
+> depender de um endpoint **remoto** contradiz "funciona offline" — se a
+> internet cair, o cliente não conseguiria nem assistir às próprias câmeras.
+
+### 8.5 Camera de agent provisionada no MediaMTX central — ✅ CORRIGIDO (2026-08-02)
+
+Câmera `rtsp_pull` vinculada a um agent recebia um path no MediaMTX
+**central** com `source` apontando para o RTSP dela — tipicamente um IP de
+LAN inalcançável da VPS. Efeito: `dial tcp 192.168.0.101:554: i/o timeout`
+em loop indefinido, e duas conexões RTSP disputando a mesma câmera.
+
+Corrigido em `Camera.is_edge_managed`, aplicado nos quatro pontos que
+provisionavam (`create_camera`, `update_camera`, o watchdog de `tasks.py` que
+recriava o path a cada 30 s, e o loop de boot da API).
+
+**Atenção ao aplicar:** `api` e `worker` são **imagens separadas**. Rebuildar
+só a `api` deixa o watchdog antigo rodando no worker, que continua recriando
+o path a cada ciclo:
+
+```bash
+docker compose build api worker && docker compose up -d api worker
+```
+
+Paths legados (de câmeras criadas antes da correção) não somem sozinhos —
+precisam ser removidos uma vez:
+
+```bash
+docker compose exec -T api python -c "
+import asyncio, httpx
+async def m():
+    async with httpx.AsyncClient(timeout=5.0) as c:
+        r = await c.delete('http://mediamtx:9997/v3/config/paths/delete/<path>')
+        print(r.status_code)
+asyncio.run(m())"
+```
+
 ### 8.3 Chave de API compartilhada resolve tenant arbitrário
 
 `api/src/vms/plugins/router.py::_resolve_plugin_tenant` aceita uma API key
