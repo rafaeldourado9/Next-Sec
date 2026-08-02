@@ -92,7 +92,10 @@ class TestTaskRenderAndUploadEdgeClip:
         assert len(calls) == 1
         req = calls[0]
         assert req.method == "PUT"
-        assert str(req.url) == "http://vps-central:8000/api/v1/plugins/events/evt-1/clip"
+        # Rota nova a partir da ADR-018: o clipe de edge passa a subir pelo
+        # contrato do edge (`/edge/...`, com cota de storage por cliente), não
+        # mais pelo contrato público de plugins.
+        assert str(req.url) == "http://vps-central:8000/api/v1/edge/events/evt-1/clip"
         assert req.headers["authorization"] == "ApiKey test-key"
         assert b"clip_file" in req.content or req.headers.get("content-type", "").startswith(
             "multipart/form-data"

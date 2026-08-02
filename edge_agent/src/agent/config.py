@@ -10,12 +10,23 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # Identidade do agent no VMS
-    agent_id: str
-    agent_api_key: str
+    # Identidade do agent no VMS.
+    #
+    # Opcionais a partir da ADR-018: numa instalação nova, quem os fornece é a
+    # ativação por licença (`agent/activation.py` → `agent.json`), não o
+    # ambiente — o instalador é o mesmo pra todo cliente e não carrega segredo.
+    # Continuam sendo lidos do ambiente para não quebrar as instalações
+    # existentes (Nível 1 via `.env.edge`) nem o desenvolvimento local.
+    agent_id: str = ""
+    agent_api_key: str = ""
 
-    # URL da VMS API (ex.: http://vms-api:8000)
-    vms_api_url: AnyHttpUrl
+    # URL da VMS API (ex.: http://vms-api:8000). Numa instalação ativada por
+    # licença, o valor efetivo é o `api_base_url` devolvido pela VPS.
+    vms_api_url: AnyHttpUrl = "http://localhost:8000"  # type: ignore[assignment]
+
+    # Chave de licença para ativação não-interativa (instalação silenciosa).
+    # Ignorada se o agente já estiver ativado.
+    license_key: str = ""
 
     # Intervalo de polling de configuração (segundos)
     config_poll_interval: int = 30

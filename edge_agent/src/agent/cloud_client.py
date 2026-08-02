@@ -15,6 +15,16 @@ from agent.config import Settings
 logger = logging.getLogger(__name__)
 
 
+class CredentialsRevokedError(Exception):
+    """A VPS recusou a API key deste agente (401) — ADR-018 §1.
+
+    Não é uma falha transitória: licença suspensa, tenant desativado ou
+    desvínculo feito por um admin. Insistir seria inútil, e continuar
+    processando seria pior — o cliente deixou de ter direito ao serviço. O
+    agente para e diz por quê, em vez de reconectar em silêncio para sempre.
+    """
+
+
 @dataclass
 class CameraConfig:
     """Configuração de uma câmera recebida da API."""
@@ -83,6 +93,11 @@ class CloudClient:
         agent_id = self._settings.agent_id
 
         response = await client.get("/api/v1/agents/me/config")
+        if response.status_code == 401:
+            raise CredentialsRevokedError(
+                "A VPS recusou a credencial deste agente — licença suspensa, "
+                "desvinculada ou conta desativada."
+            )
         response.raise_for_status()
 
         data: dict[str, Any] = response.json()
@@ -92,7 +107,16 @@ class CloudClient:
                 name=cam["name"],
                 rtsp_url=cam["rtsp_url"],
                 is_active=cam.get("enabled", cam.get("is_active", True)),
-                mediamtx_path=cam.get("rtmp_push_url", f"cam-{cam['id']}"),
+                # Bug real de produção (2026-08-02): o servidor mandava a
+                # URL RTMP JÁ COMPLETA sob a chave `rtmp_push_url` (com o
+                # host interno da VPS embutido), e este código a tratava
+                # como se fosse só um path, deixando `_build_rtmp_url`
+                # prefixar a base do agent por cima — resultado:
+                # `rtmp://vps:1935/rtmp://mediamtx:1935/tenant-x/cam-y`,
+                # inválido pra qualquer client RTMP. O servidor agora manda
+                # só o path, na chave `mediamtx_path` (ver CameraConfig em
+                # api/src/vms/cameras/domain.py para o relato completo).
+                mediamtx_path=cam.get("mediamtx_path", f"cam-{cam['id']}"),
             )
             for cam in data.get("cameras", [])
         ]
@@ -123,6 +147,35 @@ class CloudClient:
             logger.debug("Heartbeat enviado: %s", status)
         except httpx.HTTPError as exc:
             logger.warning("Falha ao enviar heartbeat: %s", exc)
+
+    async def send_edge_heartbeat(self, **stats: Any) -> dict[str, Any] | None:
+        """Bate em `POST /edge/heartbeat` e devolve a policy vigente (ADR-018 §5).
+
+        Distinto de `send_heartbeat` (`/agents/me/heartbeat`, que só registra
+        que o agente está vivo): este é o canal pelo qual a VPS **reconfigura**
+        a instalação — mudar a cota ou a duração do clipe de um cliente pelo
+        painel chega aqui em um minuto, sem ninguém tocar na máquina.
+
+        Retorna `None` em falha de rede: heartbeat perdido não é motivo pra
+        parar de processar câmera (o agente segue com a última policy que
+        conhece). Só o 401 é fatal, e sobe como `CredentialsRevokedError`.
+        """
+        client = self._ensure_client()
+        try:
+            response = await client.post("/api/v1/edge/heartbeat", json=stats)
+        except httpx.HTTPError as exc:
+            logger.warning("Falha ao enviar heartbeat de edge: %s", exc)
+            return None
+
+        if response.status_code == 401:
+            raise CredentialsRevokedError(
+                "A VPS recusou a credencial deste agente — licença suspensa, "
+                "desvinculada ou conta desativada."
+            )
+        if response.status_code >= 400:
+            logger.warning("Heartbeat de edge recusado (%s)", response.status_code)
+            return None
+        return response.json()  # type: ignore[no-any-return]
 
     async def listen_for_config_push(
         self, on_update: Callable[[dict, Callable[[str], Any]], Any]

@@ -291,12 +291,18 @@ class AgentTunnelInternal(BaseModel):
 
 
 class CameraConfigItem(BaseModel):
-    """Item de configuração de câmera para o agent."""
+    """Item de configuração de câmera para o agent.
+
+    `mediamtx_path` é só o caminho (ex.: `tenant-x/cam-y`) — era
+    `rtmp_push_url` (URL RTMP completa, montada com o host INTERNO da VPS)
+    até um bug real achado em produção: o agent prefixava a própria base
+    RTMP por cima de uma URL que já vinha completa. Ver `CameraConfig` em
+    `cameras/domain.py` para o relato completo."""
 
     id: str
     name: str
     rtsp_url: str
-    rtmp_push_url: str
+    mediamtx_path: str
     enabled: bool
 
 

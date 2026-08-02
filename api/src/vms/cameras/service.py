@@ -170,18 +170,20 @@ class CameraService:
             camera_type=camera_type,
         )
         saved = await self._cameras.create(camera)
-        # Registra path no MediaMTX com source URL se houver RTSP
-        source_url = (
-            saved.rtsp_url
-            if saved.stream_protocol in (StreamProtocol.RTSP_PULL, StreamProtocol.ONVIF)
-            else ""
-        )
-        await self._mediamtx.add_path(
-            saved.mediamtx_path,
-            source_url=source_url,
-            recording_enabled=saved.recording_enabled,
-            retention_days=saved.retention_days,
-        )
+        # Câmera de agent é tratada no edge (ADR-019 §1) — nada a provisionar
+        # no MediaMTX central. Ver `Camera.is_edge_managed`.
+        if not saved.is_edge_managed:
+            source_url = (
+                saved.rtsp_url
+                if saved.stream_protocol in (StreamProtocol.RTSP_PULL, StreamProtocol.ONVIF)
+                else ""
+            )
+            await self._mediamtx.add_path(
+                saved.mediamtx_path,
+                source_url=source_url,
+                recording_enabled=saved.recording_enabled,
+                retention_days=saved.retention_days,
+            )
         if saved.agent_id:
             await _notify_agent(saved.agent_id, "camera_added", {"camera_id": saved.id})
         return saved
@@ -305,7 +307,7 @@ class CameraService:
 
         # Re-provision MediaMTX path se RTSP URL mudou, ou se algo que afeta
         # a config de gravação mudou (force=True — ver docstring de add_path).
-        if rtsp_url is not None or recording_config_changed:
+        if (rtsp_url is not None or recording_config_changed) and not updated.is_edge_managed:
             source_url = (
                 updated.rtsp_url
                 if updated.stream_protocol in (StreamProtocol.RTSP_PULL, StreamProtocol.ONVIF)
@@ -327,6 +329,10 @@ class CameraService:
         """Remove câmera. Best-effort: não falha se MediaMTX inacessível."""
         camera = await self.get_camera(camera_id, tenant_id)
         agent_id = camera.agent_id
+        # Sem checar `is_edge_managed` de propósito: câmeras criadas ANTES da
+        # ADR-019 têm path no MediaMTX central mesmo sendo de agent, e
+        # precisam ser limpas. Para as novas, isto é um no-op barato (o
+        # MediaMTX responde 404 e o método já é best-effort).
         await self._mediamtx.remove_path(camera.mediamtx_path)
         await self._cameras.delete(camera_id, tenant_id)
         if agent_id:
@@ -489,13 +495,12 @@ class AgentService:
         if not agent.is_active:
             raise UnauthorizedError("Agent desativado")
         cameras = await self._cameras.list_by_agent(agent_id, tenant_id)
-        settings = get_settings()
         configs = [
             CameraConfig(
                 id=cam.id,
                 name=cam.name,
                 rtsp_url=cam.rtsp_url or "",
-                rtmp_push_url=(f"{settings.mediamtx_rtmp_url}/{cam.mediamtx_path}"),
+                mediamtx_path=cam.mediamtx_path,
                 enabled=cam.is_active,
             )
             for cam in cameras

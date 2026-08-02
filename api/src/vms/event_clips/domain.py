@@ -21,6 +21,10 @@ class EventClip:
 
     id: str
     vms_event_id: str
+    # Denormalizado do evento (ADR-018 §4) — é sobre isto que a cota de
+    # storage por cliente é somada, sem JOIN a cada upload.
+    tenant_id: str | None = None
+    size_bytes: int = 0
     storage_provider: str = "local"
     storage_ref: str | None = None
     storage_url: str | None = None

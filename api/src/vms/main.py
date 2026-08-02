@@ -59,8 +59,16 @@ async def _provision_mediamtx_paths() -> None:
     try:
         factory = get_session_factory()
         async with factory() as session:
+            # `agent_id.is_(None)`: câmera de agent é tratada no edge
+            # (ADR-019 §1) — a VPS não puxa nem serve o stream dela, então
+            # não há path a provisionar aqui. Sem este filtro, todo boot da
+            # API recriava o path com source de LAN e reiniciava o loop de
+            # `i/o timeout` no MediaMTX central.
             result = await session.execute(
-                select(CameraModel).where(CameraModel.is_active.is_(True))
+                select(CameraModel).where(
+                    CameraModel.is_active.is_(True),
+                    CameraModel.agent_id.is_(None),
+                )
             )
             cameras = result.scalars().all()
 
@@ -279,6 +287,7 @@ def _include_routers(app: FastAPI) -> None:
     from vms.watchlist.router import router as watchlist_router
     from vms.billing.router import router as billing_router
     from vms.whatsapp.router import router as whatsapp_router
+    from vms.edge.router import router as edge_router
 
     # Health
     app.include_router(health_router, prefix="/api/v1")
@@ -304,6 +313,9 @@ def _include_routers(app: FastAPI) -> None:
 
     # Contrato público de plugins externos
     app.include_router(plugins_router, prefix="/api/v1")
+
+    # Edge — ativação por licença e ingestão em lote (ADR-018)
+    app.include_router(edge_router, prefix="/api/v1")
 
     # Analytics — catálogo e eventos
     app.include_router(analytics_router, prefix="/api/v1")

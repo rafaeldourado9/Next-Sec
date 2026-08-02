@@ -28,6 +28,8 @@ def _to_domain(m: EventClipModel) -> EventClip:
     return EventClip(
         id=m.id,
         vms_event_id=m.vms_event_id,
+        tenant_id=m.tenant_id,
+        size_bytes=m.size_bytes or 0,
         storage_provider=m.storage_provider,
         storage_ref=m.storage_ref,
         storage_url=m.storage_url,
@@ -61,6 +63,8 @@ class EventClipRepository:
         model = EventClipModel(
             id=clip.id or str(uuid.uuid4()),
             vms_event_id=clip.vms_event_id,
+            tenant_id=clip.tenant_id,
+            size_bytes=clip.size_bytes,
             storage_provider=clip.storage_provider,
             status=clip.status.value,
             duration_seconds=clip.duration_seconds,

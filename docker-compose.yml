@@ -35,7 +35,12 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-next_sec}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-next_sec_dev}
     ports:
-      - "15672:15672"   # management UI (dev only)
+      # 127.0.0.1: painel de administração NUNCA deve escutar em 0.0.0.0.
+      # Achado em 2026-08-02: estava respondendo HTTP 200 na internet pública
+      # (ver docs/DEPLOY_VPS.md §8.1). Amarrando ao loopback, continua
+      # acessível em dev (é assim que se acessa de qualquer jeito) e na VPS
+      # só por túnel SSH: `ssh -L 15672:127.0.0.1:15672 root@<vps>`.
+      - "127.0.0.1:15672:15672"   # management UI
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
@@ -67,8 +72,19 @@ services:
       context: ./infra/mediamtx
     restart: unless-stopped
     ports:
-      - "8554:8554"   # RTSP
-      - "1935:1935"   # RTMP (push do edge agent)
+      # Ambas no loopback: nada de FORA da VPS precisa falar com o MediaMTX
+      # central.
+      #
+      # RTSP (8554) é porta de leitura — o frontend consome HLS/WebRTC via
+      # nginx e o analytics lê pela rede interna do Docker.
+      #
+      # RTMP (1935) era por onde o agente de edge publicava. A ADR-019 §1
+      # removeu esse caminho: o vídeo não atravessa mais a VPS, a
+      # visualização é local. Mantida no loopback (em vez de removida) para
+      # o caso Nível 3, em que a própria VPS ingere de uma câmera com IP
+      # público — aí o tráfego nasce dentro da própria máquina.
+      - "127.0.0.1:8554:8554"   # RTSP
+      - "127.0.0.1:1935:1935"   # RTMP
     environment:
       # Base URL do publish-auth + hooks on_ready/on_not_ready/
       # on_record_segment_complete (ver entrypoint.sh/mediamtx.yml) — aqui,
@@ -154,6 +170,12 @@ services:
       - WG_CONTROL_TOKEN=${WG_CONTROL_TOKEN:-dev-wg-control-key}
       - WG_PUBLIC_ENDPOINT=${WG_PUBLIC_ENDPOINT:-localhost:51820}
       - WG_SUBNET=${WG_SUBNET:-10.60.0.0/24}
+      # Endereços PÚBLICOS devolvidos na ativação por licença (ADR-018 §1).
+      # Não confundir com MEDIAMTX_RTMP_URL/localhost acima, que são nomes da
+      # rede Docker interna: quem recebe estes valores é um agente rodando na
+      # casa do cliente, para quem `mediamtx` e `localhost` não existem.
+      - EDGE_PUBLIC_API_URL=${EDGE_PUBLIC_API_URL:-http://localhost:8000}
+      - RTMP_PUBLIC_URL=${RTMP_PUBLIC_URL:-rtmp://localhost:1935}
     volumes:
       - ./api:/app
       - snapshots:/snapshots
@@ -315,7 +337,11 @@ services:
       - DOMAIN=${DOMAIN:-localhost}
     volumes:
       - ./infra/nginx/certs:/etc/nginx/certs:ro
+      # Webroot do desafio ACME — escrita pelo certbot, leitura pelo nginx.
       - ./infra/nginx/certbot:/var/www/certbot:ro
+      # Certificados do Let's Encrypt. O entrypoint só habilita o bloco :443
+      # se encontrar o fullchain.pem aqui (ver infra/nginx/docker-entrypoint.sh).
+      - letsencrypt:/etc/letsencrypt:ro
       # Instalador do agent (Windows) — build via PyInstaller, ver
       # native_installer/windows/. Binário não vai pro git (veja .gitignore);
       # precisa ser gerado uma vez e colocado em release/ antes do deploy.
@@ -347,8 +373,14 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-miniosecret}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # 127.0.0.1 pelo mesmo motivo do RabbitMQ acima: o console (9001)
+      # estava respondendo HTTP 200 na internet pública e a API (9000)
+      # aberta (ver docs/DEPLOY_VPS.md §8.1). Nada do produto consome estas
+      # portas pelo host — a API fala com o MinIO pela rede interna do
+      # Docker (`MINIO_ENDPOINT=http://minio:9000`). Acesso remoto, quando
+      # necessário, por túnel SSH.
+      - "127.0.0.1:9000:9000"   # API S3
+      - "127.0.0.1:9001:9001"   # console admin
     volumes:
       - minio_data:/data
     healthcheck:
@@ -381,14 +413,31 @@ services:
   backup-scheduler:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Verifica a INTEGRIDADE do dump antes de considerá-lo um backup.
+    #
+    # A versão anterior fazia `pg_dump | gzip > arquivo` e seguia em frente:
+    # num pipe, o status de saída é o do ÚLTIMO comando (gzip), não o do
+    # pg_dump. Um dump que falhasse no meio produzia um .gz perfeitamente
+    # válido com conteúdo truncado — e o `find -delete` logo abaixo rotacionava
+    # os backups BONS para fora, mantendo só os quebrados. Backup que mente é
+    # pior que backup nenhum: a falha só apareceria na hora de restaurar.
+    #
+    # A verificação é o rodapé que o pg_dump só escreve se chegou ao fim.
+    # Em caso de falha: o arquivo ruim é removido e os antigos são PRESERVADOS.
     entrypoint: >
       /bin/sh -c "
         while true; do
-          echo '[$$(date)] Running backup...';
-          PGPASSWORD=$$PGPASSWORD pg_dump -h $$POSTGRES_HOST -p $$POSTGRES_PORT -U $$POSTGRES_USER -d $$POSTGRES_DB | gzip > /backups/nextsec-backup-$$(date +\%Y\%m\%d_\%H\%M\%S).sql.gz;
-          echo '[$$(date)] Backup completed';
-          find /backups -name 'nextsec-backup-*' -mtime +$$RETENTION_DAYS -delete;
-          echo '[$$(date)] Old backups cleaned';
+          DEST=/backups/nextsec-backup-$$(date +%Y%m%d_%H%M%S).sql.gz;
+          echo \"[$$(date)] Backup iniciado -> $$DEST\";
+          PGPASSWORD=$$PGPASSWORD pg_dump -h $$POSTGRES_HOST -p $$POSTGRES_PORT -U $$POSTGRES_USER -d $$POSTGRES_DB | gzip > $$DEST;
+          if gunzip -c $$DEST 2>/dev/null | tail -5 | grep -q 'PostgreSQL database dump complete'; then
+            echo \"[$$(date)] Backup OK ($$(du -h $$DEST | cut -f1))\";
+            find /backups -name 'nextsec-backup-*' -mtime +$$RETENTION_DAYS -delete;
+            echo \"[$$(date)] Backups antigos removidos\";
+          else
+            echo \"[$$(date)] BACKUP FALHOU: dump incompleto. Removendo $$DEST e PRESERVANDO os anteriores.\";
+            rm -f $$DEST;
+          fi;
           sleep 86400;
         done
       "
@@ -417,6 +466,10 @@ volumes:
   arcanum_data:
   recordings:
   wireguard_data:
+  # Certificados emitidos pelo certbot (ver docs/DEPLOY_VPS.md). Volume
+  # nomeado, e não bind mount, pra sobreviver a um `git clean` no diretório
+  # do projeto — perder a chave privada obrigaria a reemitir o certificado.
+  letsencrypt:
 
 networks:
   next_sec:

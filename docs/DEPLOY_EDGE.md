@@ -128,13 +128,12 @@ logs do worker/mock se o clipe não chegar dentro do timeout.
 
 ## 7. Limitações conhecidas (não resolvidas neste sprint)
 
-- **Fila de retry (`EventOutbox`, SQLite) sem cap de tamanho/idade** —
-  aceitável para o caso motivador (queda passageira de rede), mas se a VPS
-  central ficar inacessível por muito tempo (horas/dias), `outbox.db` no
-  volume `outbox_data` do container `analytics` cresce sem limite, sem
-  aviso ou proteção de disco. Documentado com teste real em
-  `analytics/tests/test_vms_client_resilience.py::TestOutboxUnboundedGrowth`
-  (ver S6-06).
+- ~~**Fila de retry (`EventOutbox`, SQLite) sem cap de tamanho/idade**~~ —
+  **resolvido no Sprint 8** (ADR-018 §5). A fila agora descarta os itens mais
+  antigos ao passar de `OUTBOX_MAX_ROWS` (50 000) ou `OUTBOX_MAX_AGE_SECONDS`
+  (7 dias), conta os descartes e os reporta no heartbeat (`outbox_dropped`) —
+  descarte silencioso seria pior que o crescimento. Ver
+  `analytics/tests/test_vms_client_resilience.py::TestOutboxCap`.
 - **Ordem de entrega do backlog não é garantida** — sob falha concorrente
   de vários eventos, o backoff por item pode reordenar o reenvio quando a
   rede volta. Não é um bug: cada evento carrega seu próprio `occurred_at`,

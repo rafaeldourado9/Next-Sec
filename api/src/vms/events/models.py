@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, func
+from sqlalchemy import DateTime, Float, ForeignKey, Index, String, func, text
 from sqlalchemy import JSON as JSONB  # Compatível com SQLite para testes
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -26,6 +26,16 @@ class VmsEventModel(Base):
     __table_args__ = (
         Index("ix_vms_events_tenant_occurred", "tenant_id", "occurred_at"),
         Index("ix_vms_events_plate", "plate"),
+        # Idempotência do ingest em lote (ADR-018 §5): o edge reenvia o que não
+        # teve resposta confirmada, então o mesmo evento pode chegar duas vezes.
+        # Único por tenant, não global — o ID é gerado no cliente.
+        Index(
+            "uq_vms_events_tenant_client_event",
+            "tenant_id",
+            "client_event_id",
+            unique=True,
+            postgresql_where=text("client_event_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(_UUID_TYPE, primary_key=True, default=_uuid)
@@ -45,6 +55,9 @@ class VmsEventModel(Base):
     plate: Mapped[str | None] = mapped_column(String(20), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # UUID gerado no edge — chave de idempotência do ingest em lote (ADR-018
+    # §5). Nulo para eventos de origem não-edge (webhooks, Nível 3).
+    client_event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

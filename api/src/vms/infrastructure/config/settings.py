@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     # Subnet do túnel — .1 é sempre o hub; agents recebem o próximo IP livre
     wg_subnet: str = Field(default="10.60.0.0/24")
 
+    # ─── Edge (ADR-018) ───────────────────────────────────────────────────
+    # URL pública HTTPS que o agente de edge usa depois de ativado. Devolvida
+    # na resposta de `POST /edge/activate` em vez de ser configurada na
+    # máquina do cliente — o instalador é idêntico para todos, e trocar o
+    # domínio da VPS não exige tocar em nenhuma instalação existente.
+    edge_public_api_url: str = Field(default="http://localhost:8000")
+
     # ─── Limites ──────────────────────────────────────────────────────────
     max_cameras: int = Field(default=200)
 

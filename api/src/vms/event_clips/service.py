@@ -120,7 +120,7 @@ class EventClipService:
             return existing
 
         clip = await self._clips.create(
-            EventClip(id=str(uuid.uuid4()), vms_event_id=vms_event_id)
+            EventClip(id=str(uuid.uuid4()), vms_event_id=vms_event_id, tenant_id=tenant_id)
         )
         await self._session.commit()
         clip = await self._update_status_isolated(clip.id, ClipStatus.STAGED)
@@ -144,6 +144,9 @@ class EventClipService:
         com sucesso ou não."""
         try:
             try:
+                # Medido antes do upload: depois o arquivo local já foi embora,
+                # e é este número que alimenta a cota de storage do cliente.
+                size_bytes = os.path.getsize(local_mp4_path)
                 key = f"{tenant_id}/{clip.id}.mp4"
                 url = await self._storage.upload(local_mp4_path, key, content_type="video/mp4")
             finally:
@@ -151,7 +154,9 @@ class EventClipService:
                     os.remove(local_mp4_path)
 
             return await self._update_status_isolated(
-                clip.id, ClipStatus.UPLOADED, storage_ref=key, storage_url=url
+                clip.id, ClipStatus.UPLOADED,
+                storage_ref=key, storage_url=url, size_bytes=size_bytes,
+                tenant_id=tenant_id,
             )
         except Exception as exc:
             logger.exception("Falha ao enviar clipe do evento %s", clip.vms_event_id)

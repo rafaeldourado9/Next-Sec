@@ -24,7 +24,15 @@ def _uuid() -> str:
 
 
 class LicenseKeyModel(Base):
-    """Tabela de chaves de licença (formato XXXX-XXXXX-XXXXX-XXXXX-XXXXX)."""
+    """Tabela de chaves de licença (formato XXXX-XXXXX-XXXXX-XXXXX-XXXXX).
+
+    A partir da ADR-018 a licença acumula um segundo papel além do comercial:
+    é a **credencial de bootstrap do agente de edge**. `POST /edge/activate`
+    troca a chave digitada pelo cliente por uma API key, vinculando-a à
+    máquina (`hardware_fingerprint`) — é esse vínculo que impede uma licença
+    de virar N instalações. As colunas de limite (`events_per_minute` em
+    diante) viajam na resposta da ativação e é o agente quem as respeita.
+    """
 
     __tablename__ = "license_keys"
 
@@ -39,3 +47,17 @@ class LicenseKeyModel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    # ─── Ativação do edge (ADR-018 §1) ────────────────────────────────────
+    hardware_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    activated_hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(_UUID_TYPE, nullable=True)
+    agent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # ─── Limites operacionais (ADR-018 §4/§5) ─────────────────────────────
+    events_per_minute: Mapped[int] = mapped_column(Integer, nullable=False, default=120)
+    clip_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    clip_max_height: Mapped[int] = mapped_column(Integer, nullable=False, default=480)
+    clip_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    storage_quota_mb: Mapped[int] = mapped_column(Integer, nullable=False, default=5120)

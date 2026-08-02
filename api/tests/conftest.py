@@ -7,6 +7,16 @@ para uma suíte de integração futura que suba os serviços via docker compose
 """
 from __future__ import annotations
 
+import os
+
+# Precisa vir ANTES de qualquer import de `vms.*`: o limiter global
+# (`vms/shared/api/rate_limit.py`) lê ENVIRONMENT no momento em que o módulo é
+# carregado e se desabilita sozinho em "testing". Sem isso, o limite por IP de
+# `POST /edge/activate` (10/min) contaria todos os testes da sessão como se
+# fossem um só cliente — cada teste que chega depois do 10º falharia por 429
+# num limite que não é o objeto do teste.
+os.environ.setdefault("ENVIRONMENT", "testing")
+
 import uuid
 from collections.abc import AsyncGenerator
 
