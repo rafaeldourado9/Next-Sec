@@ -110,9 +110,16 @@ class AgentCredentials:
 
 
 def default_credentials_path() -> Path:
-    """`%ProgramData%\\NextSecEdge\\agent.json` no Windows; `/etc/nextsec` no Linux."""
+    """`%ProgramData%\\NextSecAgent\\agent.json` no Windows; `/etc/nextsec` no Linux.
+
+    `NextSecAgent` e não `NextSecEdge`: esse segundo diretório já pertence ao
+    instalador Nível 1 (Docker, `install-docker.ps1`), e as duas instalações
+    podem coexistir na mesma máquina durante a transição. Precisa bater com o
+    `$installDir` de `install-licensed.ps1`, que anuncia esse caminho ao
+    cliente no fim da instalação.
+    """
     if platform.system() == "Windows":
-        base = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "NextSecEdge"
+        base = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "NextSecAgent"
     else:
         base = Path(os.environ.get("NEXTSEC_CONFIG_DIR", "/etc/nextsec"))
     return base / "agent.json"

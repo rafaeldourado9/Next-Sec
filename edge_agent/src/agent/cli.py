@@ -96,8 +96,25 @@ def _cmd_fingerprint(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _force_utf8_output() -> None:
+    """Garante UTF-8 na saída, inclusive quando ela vai pra arquivo ou pipe.
+
+    Achado ao testar o `.exe` real: quando stdout não é um console (NSSM
+    redirecionando pro log do serviço, ou o instalador capturando a saída),
+    o Python cai em `locale.getpreferredencoding()` — cp1252 no Windows
+    brasileiro — e toda mensagem com acento chega ilegível justamente a quem
+    precisa dela: o cliente lendo o motivo de a ativação ter falhado.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     """Despacha o subcomando, ou roda o agente quando não há nenhum."""
+    _force_utf8_output()
     args = _build_parser().parse_args(argv)
 
     if args.command == "activate":

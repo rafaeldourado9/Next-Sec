@@ -1,6 +1,27 @@
 #!/bin/sh
 set -e
 
+# ── TLS (opcional) ────────────────────────────────────────────────────────────
+# O bloco :443 vive num template renderizado aqui, e só se o certificado
+# existir de fato. Deixá-lo fixo em nginx.conf criaria um impasse: emitir o
+# certificado exige o desafio ACME servido pelo :80, mas o nginx nem subiria
+# sem o arquivo que ainda não foi emitido. Assim o primeiro start serve só
+# HTTP, o certbot roda, e o restart seguinte já sobe com HTTPS.
+mkdir -p /etc/nginx/ssl
+rm -f /etc/nginx/ssl/*.conf
+
+DOMAIN="${DOMAIN:-localhost}"
+CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+
+if [ -f "$CERT" ]; then
+    echo "[nginx] Certificado encontrado para ${DOMAIN} — habilitando HTTPS"
+    sed "s|\${DOMAIN}|${DOMAIN}|g" /etc/nginx/ssl-server.conf.template \
+        > /etc/nginx/ssl/ssl-server.conf
+else
+    echo "[nginx] Sem certificado em ${CERT} — subindo só HTTP."
+    echo "[nginx] Emita com certbot (ver docs/DEPLOY_VPS.md) e reinicie este container."
+fi
+
 echo "[nginx] Aguardando API ficar disponível..."
 MAX_RETRIES=30
 RETRY_COUNT=0

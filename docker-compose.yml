@@ -315,7 +315,11 @@ services:
       - DOMAIN=${DOMAIN:-localhost}
     volumes:
       - ./infra/nginx/certs:/etc/nginx/certs:ro
+      # Webroot do desafio ACME — escrita pelo certbot, leitura pelo nginx.
       - ./infra/nginx/certbot:/var/www/certbot:ro
+      # Certificados do Let's Encrypt. O entrypoint só habilita o bloco :443
+      # se encontrar o fullchain.pem aqui (ver infra/nginx/docker-entrypoint.sh).
+      - letsencrypt:/etc/letsencrypt:ro
       # Instalador do agent (Windows) — build via PyInstaller, ver
       # native_installer/windows/. Binário não vai pro git (veja .gitignore);
       # precisa ser gerado uma vez e colocado em release/ antes do deploy.
@@ -417,6 +421,10 @@ volumes:
   arcanum_data:
   recordings:
   wireguard_data:
+  # Certificados emitidos pelo certbot (ver docs/DEPLOY_VPS.md). Volume
+  # nomeado, e não bind mount, pra sobreviver a um `git clean` no diretório
+  # do projeto — perder a chave privada obrigaria a reemitir o certificado.
+  letsencrypt:
 
 networks:
   next_sec:
