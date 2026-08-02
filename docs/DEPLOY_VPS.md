@@ -1,13 +1,30 @@
-# Deploy na VPS compartilhada (fastos, 2.25.180.57)
+# Deploy na VPS (2.25.180.57)
 
-O Next Sec compartilha hardware com **FastOS** e **Civix**, já em produção
-nessa VPS (2 vCPU / 8 GB RAM / 96 GB disco, Ubuntu 24.04). Portas 80/443
-já são ocupadas pelo nginx do FastOS (`fastos-prod-nginx-1`) — o Next Sec
-**não** publica essas portas; ele fica atrás desse nginx compartilhado,
-conectado por uma rede Docker dedicada (`next_sec_edge`).
+> ## ⚠️ DESATUALIZADO a partir de 2026-08-02
+>
+> Este documento descreve o setup **antigo** (VPS compartilhada com FastOS e
+> Civix, nginx do FastOS terminando TLS). Em 2026-08-02 a VPS foi encontrada
+> **vazia** — zero containers, zero volumes, zero imagens Docker; 49 dias de
+> uptime, então a máquina não foi reinstalada, apenas o estado do Docker
+> desapareceu. **FastOS e Civix não existem mais nessa máquina.**
+>
+> O Next Sec foi reprovisionado do zero e agora é **dono direto das portas
+> 80/443**, terminando TLS ele mesmo (ver `infra/nginx/ssl-server.conf.template`
+> e `docker-entrypoint.sh`). As seções 2, 3 e 6 abaixo — rede compartilhada
+> `next_sec_edge`, `docker cp` do vhost no container do FastOS e
+> `docker-compose.vps.yml` — **não se aplicam mais**.
+>
+> Fluxo atual: `cd /opt/next_sec && git pull && docker compose build <svc> &&
+> docker compose up -d <svc>`. O certificado Let's Encrypt é emitido por
+> certbot webroot (ver §3) e **renovado manualmente** a cada ~80 dias.
+>
+> **Ver também: [§8 Pendências de segurança](#8-pendências-de-segurança-confirmadas-em-produção)
+> — há exposições confirmadas em produção agora.**
 
-Antes de qualquer coisa: `docker ps` na VPS pra ver o estado atual do
-FastOS/Civix (não assumir que a VPS está livre).
+O Next Sec roda numa VPS de 2 vCPU / 8 GB RAM / 96 GB disco, Ubuntu 24.04.
+
+Antes de qualquer coisa: `docker ps` na VPS pra ver o estado atual (não
+assumir que a VPS está livre nem que está como este documento descreve).
 
 ## 1. Variáveis de ambiente de produção
 
@@ -125,16 +142,74 @@ curl https://nextsec.seudominio.com/api/v1/health   # de fora, via nginx do Fast
 
 Confirmar `db=ok`, `redis=ok`, `rabbitmq=ok` na resposta.
 
-## 8. Observação de segurança (revisar antes de ir ao ar)
+## 8. Pendências de segurança (confirmadas em produção)
 
-`docker-compose.yml` ainda publica no host algumas portas que só existem
-para conveniência de dev local: RabbitMQ management (`15672`), console do
-MinIO (`9000`/`9001`) e RTSP do MediaMTX (`8554`). O tráfego real do agent
-(API + RTMP) já passa pelo túnel WireGuard via `socat` no hub
-(`infra/wireguard/entrypoint.sh`), então essas portas não precisam estar
-expostas publicamente em produção — vale um `docker-compose.vps.yml`
-adicional zerando-as (mesmo padrão usado no nginx) antes do deploy real,
-se o objetivo for produção séria e não só um piloto interno.
+Este aviso existia desde o Sprint 5 como "revisar antes de ir ao ar". Em
+2026-08-02 as exposições foram **verificadas de fora da VPS** e estão ativas
+agora. Não é mais uma observação preventiva.
+
+### 8.1 Painéis de administração abertos na internet
+
+Testado de fora, contra `vm-server.duckdns.org`:
+
+| Porta | Serviço | Resposta externa |
+|---|---|---|
+| `9001` | Console admin do MinIO | **HTTP 200** |
+| `15672` | Management do RabbitMQ | **HTTP 200** |
+| `9000` | API do MinIO | HTTP 403 (aberta, exige credencial) |
+| `8554` | RTSP do MediaMTX | Aberta |
+
+As credenciais são fortes (geradas com `openssl rand`), mas painéis de
+administração não deveriam estar acessíveis publicamente — nenhum fluxo do
+produto depende disso.
+
+**Correção:** zerar a publicação dessas portas no compose (mesmo padrão
+`ports: !reset []` já usado no nginx). Nada quebra: o MinIO é consumido pela
+API pela rede interna do Docker, e o RabbitMQ management é ferramenta de
+diagnóstico.
+
+A porta `1935` (RTMP) deixa de ser necessária com a
+[ADR-019](../../.genesis/architecture/adrs/019-edge-first-vps-events-only.md)
+— o vídeo passa a não atravessar mais a VPS.
+
+### 8.2 MediaMTX central com autenticação de publicação inexistente
+
+`infra/mediamtx/mediamtx.yml` define `authMethod: http` apontando para
+`<base>/streaming/publish-auth`. **Esse endpoint não existe na API** — não há
+nenhuma rota com o prefixo `/streaming`. Toda publicação RTMP é recusada com
+`failed to authenticate: server replied with code 404` (confirmado nos logs
+de produção).
+
+O comportamento é fail-closed, então **não é uma brecha** — é uma
+funcionalidade que nunca funcionou. A ADR-019 resolve por remoção: o caminho
+de vídeo até a VPS deixa de existir.
+
+### 8.3 Chave de API compartilhada resolve tenant arbitrário
+
+`api/src/vms/plugins/router.py::_resolve_plugin_tenant` aceita uma API key
+vinda de variável de ambiente (`VMS_API_KEY`) e, para ela, resolve o tenant
+como *"o primeiro admin do banco"*:
+
+```sql
+SELECT tenant_id FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1
+```
+
+Numa VPS **multi-tenant**, isso associa eventos a um cliente arbitrário — o
+mais antigo. É um risco de isolamento entre tenants, não apenas uma
+inelegância. O caminho correto (API key por agente, emitida na ativação) já
+existe desde a ADR-018; este atalho é herança do modelo single-tenant.
+
+### 8.4 Serviços de produção não iniciados
+
+O deploy de 2026-08-02 subiu um subconjunto: `postgres redis rabbitmq minio
+mediamtx api worker frontend nginx`. **Não estão rodando:**
+
+- `backup-scheduler` — **não há backup do banco**. Inaceitável antes de
+  qualquer cliente real.
+- `analytics` — nenhuma detecção acontece na VPS (esperado pela ADR-019, que
+  move isso para o edge, mas hoje significa que não há detecção em lugar
+  nenhum).
+- `arcanum` — nenhuma notificação de WhatsApp sai.
 
 ## Próximos passos (Sprint 5)
 
