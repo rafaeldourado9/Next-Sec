@@ -153,6 +153,13 @@ class CredentialStore:
             return None
         try:
             return AgentCredentials.from_dict(json.loads(self._path.read_text(encoding="utf-8")))
+        except PermissionError:
+            # Distinto de "corrompido" de propósito: o arquivo existe e está
+            # íntegro, só não é legível por esta conta (a ACL restringe a
+            # SYSTEM+Administradores, e o serviço roda como SYSTEM). Tratar
+            # isso como ausência de credencial levaria o suporte a "reativar",
+            # o que revoga a chave de um agente que estava saudável.
+            raise
         except (OSError, ValueError, KeyError):
             logger.warning(
                 "%s ilegível ou incompleto — será necessário reativar com a licença",

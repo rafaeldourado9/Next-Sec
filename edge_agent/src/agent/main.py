@@ -255,6 +255,18 @@ async def _resolve_credentials(settings) -> AgentCredentials | None:  # noqa: AN
     disso seria pior que seguir operando como antes.
     """
     store = CredentialStore()
+    try:
+        store.load()
+    except PermissionError:
+        # O serviço roda como SYSTEM e deveria ler sem problema. Se caiu aqui,
+        # o agente está rodando com uma conta que não tem acesso — falhar alto
+        # é melhor que reativar e revogar a credencial de uma instalação boa.
+        logger.error(
+            "Sem permissão para ler as credenciais — o agente precisa rodar como "
+            "SYSTEM/Administrador", credentials_path=str(store.path),
+        )
+        raise
+
     if not store.exists() and not settings.license_key:
         if settings.agent_id and settings.agent_api_key:
             logger.info("Agente sem ativação por licença — usando identidade do ambiente")

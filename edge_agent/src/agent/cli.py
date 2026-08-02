@@ -49,6 +49,16 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_NEEDS_ADMIN = (
+    "Sem permissão para ler {path}.\n"
+    "O arquivo é restrito a SYSTEM e Administradores de propósito — ele contém a "
+    "credencial desta instalação.\n"
+    "Abra o PowerShell como administrador e rode de novo. NÃO reative: a "
+    "instalação provavelmente está saudável, e reativar revoga a credencial "
+    "que o serviço está usando."
+)
+
+
 def _cmd_activate(args: argparse.Namespace) -> int:
     store = CredentialStore()
     if store.exists() and not args.force:
@@ -73,7 +83,11 @@ def _cmd_activate(args: argparse.Namespace) -> int:
 
 def _cmd_status(_args: argparse.Namespace) -> int:
     store = CredentialStore()
-    credentials = store.load()
+    try:
+        credentials = store.load()
+    except PermissionError:
+        print(_NEEDS_ADMIN.format(path=store.path), file=sys.stderr)
+        return 3
     if credentials is None:
         print(f"Não ativado. Nenhuma credencial válida em {store.path}.")
         return 1

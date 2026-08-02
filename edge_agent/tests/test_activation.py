@@ -177,6 +177,23 @@ class TestCredentialStore:
 
         assert CredentialStore(path).load() is None
 
+    def test_unreadable_file_raises_instead_of_looking_unactivated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ACL restringe o arquivo a SYSTEM+Administradores. Uma conta sem
+        acesso não pode concluir "não ativado" — isso levaria o suporte a
+        reativar, revogando a credencial de um agente saudável."""
+        path = tmp_path / "agent.json"
+        path.write_text(json.dumps(_OK_RESPONSE), encoding="utf-8")
+
+        def _denied(*args, **kwargs):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "read_text", _denied)
+
+        with pytest.raises(PermissionError):
+            CredentialStore(path).load()
+
     def test_file_missing_required_field_is_treated_as_absent(self, tmp_path: Path) -> None:
         path = tmp_path / "agent.json"
         path.write_text(json.dumps({"tenant_id": "t1"}), encoding="utf-8")

@@ -126,6 +126,22 @@ class TestStatusCommand:
         assert cli.main(["status"]) == 1
         assert "Não ativado" in capsys.readouterr().out
 
+    def test_permission_denied_tells_support_not_to_reactivate(
+        self, store_at: CredentialStore, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """Codigo 3 (nao 1): "sem permissao" e "nao ativado" exigem acoes
+        opostas, e confundi-los faz o suporte revogar a credencial de um
+        agente que estava funcionando."""
+        def _denied(self):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(CredentialStore, "load", _denied)
+
+        assert cli.main(["status"]) == 3
+        err = capsys.readouterr().err
+        assert "administrador" in err.lower()
+        assert "NÃO reative" in err
+
 
 class TestFingerprintCommand:
     def test_prints_the_machine_id(self, capsys) -> None:
