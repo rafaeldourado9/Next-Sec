@@ -528,12 +528,24 @@ class Camera(AggregateRoot):
 
 @dataclass
 class CameraConfig:
-    """Configuração de uma câmera para o agent (apenas rtsp_pull)."""
+    """Configuração de uma câmera para o agent (apenas rtsp_pull).
+
+    `mediamtx_path` é só o CAMINHO (ex.: `tenant-x/cam-y`), não a URL RTMP
+    completa — era `rtmp_push_url` até um bug real achado em produção
+    (2026-08-02, primeiro teste ponta a ponta de um agent nativo Windows
+    publicando de verdade): o servidor mandava a URL completa já montada
+    com o host INTERNO (`rtmp://mediamtx:1935/...`, que só resolve dentro
+    da rede Docker da VPS), e o agent, que não sabia que já era uma URL
+    completa, prefixava com a PRÓPRIA base de novo — produzindo algo como
+    `rtmp://vm-server.duckdns.org:1935/rtmp://mediamtx:1935/tenant-x/cam-y`,
+    que nenhum client RTMP consegue interpretar. Cada lado monta sua
+    própria URL a partir do path: o servidor nunca soube (nem precisa
+    saber) que endereço público o agent vai usar."""
 
     id: str
     name: str
     rtsp_url: str
-    rtmp_push_url: str
+    mediamtx_path: str
     enabled: bool
 
 

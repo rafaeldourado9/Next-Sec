@@ -489,13 +489,12 @@ class AgentService:
         if not agent.is_active:
             raise UnauthorizedError("Agent desativado")
         cameras = await self._cameras.list_by_agent(agent_id, tenant_id)
-        settings = get_settings()
         configs = [
             CameraConfig(
                 id=cam.id,
                 name=cam.name,
                 rtsp_url=cam.rtsp_url or "",
-                rtmp_push_url=(f"{settings.mediamtx_rtmp_url}/{cam.mediamtx_path}"),
+                mediamtx_path=cam.mediamtx_path,
                 enabled=cam.is_active,
             )
             for cam in cameras

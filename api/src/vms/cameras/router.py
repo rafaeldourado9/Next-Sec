@@ -590,7 +590,7 @@ async def get_agent_config(
                 id=c.id,
                 name=c.name,
                 rtsp_url=c.rtsp_url,
-                rtmp_push_url=c.rtmp_push_url,
+                mediamtx_path=c.mediamtx_path,
                 enabled=c.enabled,
             )
             for c in configs

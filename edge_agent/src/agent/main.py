@@ -160,7 +160,15 @@ class EdgeAgent:
         """
         event_type = event.get("event", "")
         if event_type in ("config_updated", "camera_added", "camera_removed", "restart_stream"):
-            logger.info("Config push recebido", event=event_type)
+            # `event=` colide com o parâmetro posicional reservado do
+            # structlog (a própria mensagem de log se chama `event`
+            # internamente) — `logger.info(msg, event=...)` sempre lança
+            # "got multiple values for argument 'event'". Achado em produção:
+            # toda vez que a VPS empurrava `camera_added` pelo WebSocket, o
+            # push falhava silenciosamente aqui (`_receive_ws` engole a
+            # exceção só como warning) e a câmera só entrava no próximo
+            # poll de config (até 30s de atraso), não na hora.
+            logger.info("Config push recebido", event_type=event_type)
             await self._sync_config()
             return
 

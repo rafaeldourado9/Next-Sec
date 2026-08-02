@@ -107,7 +107,16 @@ class CloudClient:
                 name=cam["name"],
                 rtsp_url=cam["rtsp_url"],
                 is_active=cam.get("enabled", cam.get("is_active", True)),
-                mediamtx_path=cam.get("rtmp_push_url", f"cam-{cam['id']}"),
+                # Bug real de produção (2026-08-02): o servidor mandava a
+                # URL RTMP JÁ COMPLETA sob a chave `rtmp_push_url` (com o
+                # host interno da VPS embutido), e este código a tratava
+                # como se fosse só um path, deixando `_build_rtmp_url`
+                # prefixar a base do agent por cima — resultado:
+                # `rtmp://vps:1935/rtmp://mediamtx:1935/tenant-x/cam-y`,
+                # inválido pra qualquer client RTMP. O servidor agora manda
+                # só o path, na chave `mediamtx_path` (ver CameraConfig em
+                # api/src/vms/cameras/domain.py para o relato completo).
+                mediamtx_path=cam.get("mediamtx_path", f"cam-{cam['id']}"),
             )
             for cam in data.get("cameras", [])
         ]

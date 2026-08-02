@@ -22,7 +22,7 @@ export interface CameraConfigItem {
   name: string
   rtsp_url: string
   enabled: boolean
-  rtmp_push_url: string
+  mediamtx_path: string
 }
 
 // Criação/edição/remoção de agent nativo (Nível 2) saiu do frontend — ver

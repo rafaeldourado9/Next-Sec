@@ -97,7 +97,8 @@ export interface CameraConfigItem {
   id: string
   name: string
   rtsp_url: string
-  stream_path: string
+  mediamtx_path: string
+  enabled: boolean
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────

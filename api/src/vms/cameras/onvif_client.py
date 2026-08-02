@@ -5,8 +5,12 @@ manter dependências mínimas no container da API.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import re
 import asyncio
+import secrets
+from datetime import UTC, datetime
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -61,14 +65,33 @@ _GETSNAPSHOT_BODY = """<?xml version="1.0" encoding="utf-8"?>
 
 
 def _wsa_credentials(username: str, password: str) -> str:
-    """Gera WS-Security UsernameToken (PasswordText simples — suficiente para LAN)."""
+    """Gera WS-Security UsernameToken com PasswordDigest.
+
+    Achado testando uma câmera ONVIF real (não um cenário hipotético): o
+    modo anterior (`PasswordText`, senha em texto plano no XML) era
+    rejeitado com HTTP 400 por uma câmera comum, comprada no varejo —
+    confirmado comparando com uma chamada sem nenhum header de auth, que
+    voltava 401 (endpoint existe, exige autenticação) em vez de 400
+    (mensagem malformada/rejeitada). Implementações ONVIF de verdade, em
+    geral, só aceitam o modo digest do WS-Security UsernameToken Profile
+    1.0: `PasswordDigest = Base64(SHA1(nonce || created || password))`,
+    com `nonce` aleatório por request (proteção contra replay) e `created`
+    em UTC ISO8601. SHA1 aqui não é uma escolha de segurança — é o
+    algoritmo definido pelo próprio padrão, sem alternativa.
+    """
     if not username:
         return ""
+    nonce = secrets.token_bytes(16)
+    created = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    digest = hashlib.sha1(nonce + created.encode("utf-8") + password.encode("utf-8")).digest()  # noqa: S324
     return f"""<s:Header>
-    <Security xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+    <Security xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
+              xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
       <UsernameToken>
         <Username>{username}</Username>
-        <Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">{password}</Password>
+        <Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{base64.b64encode(digest).decode()}</Password>
+        <Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">{base64.b64encode(nonce).decode()}</Nonce>
+        <wsu:Created>{created}</wsu:Created>
       </UsernameToken>
     </Security>
   </s:Header>"""
