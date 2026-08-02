@@ -35,7 +35,12 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-next_sec}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-next_sec_dev}
     ports:
-      - "15672:15672"   # management UI (dev only)
+      # 127.0.0.1: painel de administração NUNCA deve escutar em 0.0.0.0.
+      # Achado em 2026-08-02: estava respondendo HTTP 200 na internet pública
+      # (ver docs/DEPLOY_VPS.md §8.1). Amarrando ao loopback, continua
+      # acessível em dev (é assim que se acessa de qualquer jeito) e na VPS
+      # só por túnel SSH: `ssh -L 15672:127.0.0.1:15672 root@<vps>`.
+      - "127.0.0.1:15672:15672"   # management UI
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
@@ -67,7 +72,15 @@ services:
       context: ./infra/mediamtx
     restart: unless-stopped
     ports:
-      - "8554:8554"   # RTSP
+      # RTSP amarrado ao loopback: é porta de LEITURA, e nada de fora
+      # precisa dela — o frontend consome HLS/WebRTC via nginx, e o
+      # analytics lê pela rede interna do Docker. Estava aberta na internet
+      # (ver docs/DEPLOY_VPS.md §8.1).
+      - "127.0.0.1:8554:8554"   # RTSP
+      # 1935 (RTMP) continua público de propósito: é por onde o agente de
+      # edge publica. Deixa de ser necessário quando a ADR-019 §1 remover o
+      # caminho de vídeo até a VPS — a remoção acontece lá, com o resto da
+      # mudança, não aqui.
       - "1935:1935"   # RTMP (push do edge agent)
     environment:
       # Base URL do publish-auth + hooks on_ready/on_not_ready/
@@ -357,8 +370,14 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-miniosecret}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # 127.0.0.1 pelo mesmo motivo do RabbitMQ acima: o console (9001)
+      # estava respondendo HTTP 200 na internet pública e a API (9000)
+      # aberta (ver docs/DEPLOY_VPS.md §8.1). Nada do produto consome estas
+      # portas pelo host — a API fala com o MinIO pela rede interna do
+      # Docker (`MINIO_ENDPOINT=http://minio:9000`). Acesso remoto, quando
+      # necessário, por túnel SSH.
+      - "127.0.0.1:9000:9000"   # API S3
+      - "127.0.0.1:9001:9001"   # console admin
     volumes:
       - minio_data:/data
     healthcheck:
@@ -391,14 +410,31 @@ services:
   backup-scheduler:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Verifica a INTEGRIDADE do dump antes de considerá-lo um backup.
+    #
+    # A versão anterior fazia `pg_dump | gzip > arquivo` e seguia em frente:
+    # num pipe, o status de saída é o do ÚLTIMO comando (gzip), não o do
+    # pg_dump. Um dump que falhasse no meio produzia um .gz perfeitamente
+    # válido com conteúdo truncado — e o `find -delete` logo abaixo rotacionava
+    # os backups BONS para fora, mantendo só os quebrados. Backup que mente é
+    # pior que backup nenhum: a falha só apareceria na hora de restaurar.
+    #
+    # A verificação é o rodapé que o pg_dump só escreve se chegou ao fim.
+    # Em caso de falha: o arquivo ruim é removido e os antigos são PRESERVADOS.
     entrypoint: >
       /bin/sh -c "
         while true; do
-          echo '[$$(date)] Running backup...';
-          PGPASSWORD=$$PGPASSWORD pg_dump -h $$POSTGRES_HOST -p $$POSTGRES_PORT -U $$POSTGRES_USER -d $$POSTGRES_DB | gzip > /backups/nextsec-backup-$$(date +\%Y\%m\%d_\%H\%M\%S).sql.gz;
-          echo '[$$(date)] Backup completed';
-          find /backups -name 'nextsec-backup-*' -mtime +$$RETENTION_DAYS -delete;
-          echo '[$$(date)] Old backups cleaned';
+          DEST=/backups/nextsec-backup-$$(date +%Y%m%d_%H%M%S).sql.gz;
+          echo \"[$$(date)] Backup iniciado -> $$DEST\";
+          PGPASSWORD=$$PGPASSWORD pg_dump -h $$POSTGRES_HOST -p $$POSTGRES_PORT -U $$POSTGRES_USER -d $$POSTGRES_DB | gzip > $$DEST;
+          if gunzip -c $$DEST 2>/dev/null | tail -5 | grep -q 'PostgreSQL database dump complete'; then
+            echo \"[$$(date)] Backup OK ($$(du -h $$DEST | cut -f1))\";
+            find /backups -name 'nextsec-backup-*' -mtime +$$RETENTION_DAYS -delete;
+            echo '[$$(date)] Backups antigos removidos';
+          else
+            echo \"[$$(date)] BACKUP FALHOU: dump incompleto. Removendo $$DEST e PRESERVANDO os anteriores.\";
+            rm -f $$DEST;
+          fi;
           sleep 86400;
         done
       "
