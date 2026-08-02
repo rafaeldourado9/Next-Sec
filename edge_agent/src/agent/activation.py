@@ -78,6 +78,11 @@ class AgentCredentials:
     tenant_id: str
     tenant_name: str
     api_base_url: str
+    # Base RTMP pública pra onde as câmeras são publicadas. Vem do servidor
+    # pelo mesmo motivo da `api_base_url`: o instalador é igual pra todo
+    # cliente e não pode carregar o endereço da VPS. O default interno
+    # (`rtmp://mediamtx:1935`) só resolve dentro da rede Docker da VPS.
+    rtmp_url: str = ""
     policy: EdgePolicy = field(default_factory=EdgePolicy)
 
     def to_dict(self) -> dict[str, Any]:
@@ -87,6 +92,7 @@ class AgentCredentials:
             "tenant_id": self.tenant_id,
             "tenant_name": self.tenant_name,
             "api_base_url": self.api_base_url,
+            "rtmp_url": self.rtmp_url,
             "policy": self.policy.__dict__,
         }
 
@@ -98,6 +104,7 @@ class AgentCredentials:
             tenant_id=data["tenant_id"],
             tenant_name=data.get("tenant_name", ""),
             api_base_url=data["api_base_url"],
+            rtmp_url=data.get("rtmp_url", ""),
             policy=EdgePolicy.from_dict(data.get("policy") or {}),
         )
 

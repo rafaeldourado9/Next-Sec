@@ -96,6 +96,10 @@ class TestActivateHappyPath:
         assert body["tenant_name"] == tenant_a.name
         assert body["api_key"]
         assert body["agent_id"]
+        # Sem `rtmp_url`, um agente na casa do cliente publicaria em
+        # `rtmp://mediamtx:1935` — nome que só resolve dentro da rede Docker
+        # da VPS. O vídeo simplesmente não chegaria.
+        assert body["rtmp_url"].startswith("rtmp://")
         # A policy é o que faz o agente se autolimitar sem nada hardcoded nele.
         assert body["policy"]["events_per_minute"] == 120
         assert body["policy"]["clip_seconds"] == 15

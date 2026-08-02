@@ -62,11 +62,17 @@ class EdgeAgent:
         """
         self._settings = get_settings()
         if credentials is not None:
-            self._settings = self._settings.model_copy(update={
+            overrides = {
                 "agent_id": credentials.agent_id,
                 "agent_api_key": credentials.api_key,
                 "vms_api_url": credentials.api_base_url,
-            })
+            }
+            # Só sobrescreve o RTMP se o servidor mandou um: uma VPS antiga
+            # (sem `rtmp_url` na resposta) não pode zerar o valor do ambiente
+            # e deixar o agente publicando em lugar nenhum.
+            if credentials.rtmp_url:
+                overrides["mediamtx_rtmp_url"] = credentials.rtmp_url
+            self._settings = self._settings.model_copy(update=overrides)
         self._credentials = credentials
         self._client = CloudClient(self._settings)
         self._stream_manager = StreamManager(self._settings.mediamtx_rtmp_url, self._settings.ffmpeg_path)
@@ -204,7 +210,8 @@ class EdgeAgent:
         agente reiniciado voltaria aos defaults compilados e operaria com os
         limites errados até a próxima batida.
         """
-        active = self._stream_manager.active_streams()
+        # `active_streams` é property, não método (stream_manager.py:53).
+        active = self._stream_manager.active_streams
         result = await self._client.send_edge_heartbeat(
             agent_version=AGENT_VERSION,
             cameras_online=len(active),

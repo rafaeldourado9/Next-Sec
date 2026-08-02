@@ -36,6 +36,7 @@ _OK_RESPONSE = {
     "tenant_id": "tenant-1",
     "tenant_name": "Loja X",
     "api_base_url": "https://vps.exemplo.com",
+    "rtmp_url": "rtmp://vps.exemplo.com:1935",
     "policy": {
         "events_per_minute": 200,
         "batch_max_events": 100,
@@ -79,6 +80,10 @@ class TestActivate:
 
         assert credentials.api_key == "vms_chave_secreta"
         assert credentials.tenant_name == "Loja X"
+        # Sem isso o agente publicaria em `rtmp://mediamtx:1935`, que só
+        # resolve dentro da rede Docker da VPS — nada chegaria da casa do
+        # cliente.
+        assert credentials.rtmp_url == "rtmp://vps.exemplo.com:1935"
         # A policy vem do servidor, não de default compilado: mudar a cota de
         # um cliente não pode exigir reinstalar nada.
         assert credentials.policy.clip_seconds == 20

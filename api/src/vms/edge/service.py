@@ -353,3 +353,15 @@ class StorageQuota:
 def edge_public_api_url() -> str:
     """URL que o agente passa a usar depois de ativado (sem barra final)."""
     return get_settings().edge_public_api_url.rstrip("/")
+
+
+def edge_public_rtmp_url() -> str:
+    """Base RTMP pública para onde o agente empurra o vídeo.
+
+    Vem na resposta da ativação pelo mesmo motivo da `api_base_url`: o
+    instalador é idêntico para todos os clientes e não pode carregar o
+    endereço da VPS. O default interno (`rtmp://mediamtx:1935`) só resolve
+    dentro da rede Docker da própria VPS — um agente na casa do cliente
+    ficaria tentando publicar num host que não existe pra ele.
+    """
+    return get_settings().rtmp_public_url.rstrip("/")

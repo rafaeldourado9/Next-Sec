@@ -33,6 +33,7 @@ from vms.edge.service import (
     EdgeIngestService,
     StorageQuota,
     edge_public_api_url,
+    edge_public_rtmp_url,
     policy_from_license,
 )
 from vms.events.models import VmsEventModel
@@ -113,6 +114,7 @@ async def activate_edge(
         tenant_id=tenant.id,
         tenant_name=tenant.name,
         api_base_url=edge_public_api_url(),
+        rtmp_url=edge_public_rtmp_url(),
         policy=policy,
     )
 

@@ -82,6 +82,13 @@ class EdgeActivateResponse(BaseModel):
     tenant_id: str
     tenant_name: str
     api_base_url: str
+    rtmp_url: str = Field(
+        ...,
+        description=(
+            "Base RTMP pública para onde o agente empurra o vídeo das câmeras "
+            "(ex.: rtmp://vm-server.duckdns.org:1935)."
+        ),
+    )
     policy: EdgePolicy
 
 
