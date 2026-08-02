@@ -748,14 +748,25 @@ async def agent_ws(
 
         try:
             while True:
-                message = await asyncio.wait_for(
-                    pubsub.get_message(ignore_subscribe_messages=True), timeout=30.0
-                )
+                # Bug real achado testando um agente de verdade contra a VPS
+                # (2026-08-02): sem `timeout=` aqui, `get_message` usa o
+                # default de redis-py (0.0 = não-bloqueante) e retorna quase
+                # instantâneo — o `asyncio.wait_for(..., timeout=30.0)` de
+                # fora nunca chegava a esperar de verdade, e o loop girava
+                # sem pausa nenhuma: 100% de um core por agente conectado.
+                # Sob essa carga o scheduler do asyncio ficava injusto o
+                # bastante pra atrasar o ping/pong do próprio WebSocket, e a
+                # conexão caía em intervalos variáveis (visto em produção:
+                # 6.9s, 35s, 436s — sem padrão fixo, como seria um timeout
+                # explícito). Mesmo padrão já usado em `sse/router.py`:
+                # passar `timeout=` direto pro `get_message` faz o redis-py
+                # bloquear de verdade (via BRPOP interno), sem busy loop.
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=30.0)
                 if message and message["type"] == "message":
                     await websocket.send_text(message["data"])
                 if receive_task.done():
                     break
-        except (asyncio.TimeoutError, WebSocketDisconnect):
+        except WebSocketDisconnect:
             pass
         except Exception as exc:
             logger.warning("Agent WS erro: %s", exc)
