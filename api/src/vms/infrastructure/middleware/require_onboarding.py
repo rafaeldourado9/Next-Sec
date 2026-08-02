@@ -33,6 +33,11 @@ EXEMPT_PATHS = {
     "/api/v1/billing/activate",
     "/api/v1/billing/status",
     "/api/v1/lgpd/status",
+    # Edge (ADR-018): autenticado por API key, nunca por JWT de usuário — não
+    # tem `request.state.claims` e passaria de qualquer forma. Explícito aqui
+    # porque `POST /edge/activate` é exatamente o que *conclui* o onboarding:
+    # bloqueá-lo por onboarding incompleto seria um deadlock.
+    "/api/v1/edge/",
 }
 
 

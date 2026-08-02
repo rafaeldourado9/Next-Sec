@@ -71,6 +71,31 @@ class Settings(BaseSettings):
             "(ver ADR-017 §2 — sem Postgres local, só stdlib sqlite3)."
         ),
     )
+    outbox_max_rows: int = Field(
+        default=50_000,
+        description=(
+            "Teto de itens na fila local (ADR-018 §5). Ao estourar, os mais "
+            "antigos são descartados e contados no heartbeat — sem cap, uma "
+            "queda longa de rede encheria o disco do cliente e derrubaria "
+            "junto a gravação contínua."
+        ),
+    )
+    outbox_max_age_seconds: int = Field(
+        default=7 * 24 * 3600,
+        description=(
+            "Idade máxima de um item na fila local. Evento antigo demais não "
+            "tem valor operacional — só custo de banda quando a rede volta."
+        ),
+    )
+    edge_clip_seconds: int = Field(
+        default=15,
+        description=(
+            "Duração do clipe do evento enviado à VPS (ADR-018 §4). O valor "
+            "efetivo é o da licença do cliente (`policy.clip_seconds`), que o "
+            "agente recebe na ativação — este default só vale enquanto o "
+            "agente não estiver ativado."
+        ),
+    )
 
 
 @lru_cache

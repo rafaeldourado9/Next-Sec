@@ -279,6 +279,7 @@ def _include_routers(app: FastAPI) -> None:
     from vms.watchlist.router import router as watchlist_router
     from vms.billing.router import router as billing_router
     from vms.whatsapp.router import router as whatsapp_router
+    from vms.edge.router import router as edge_router
 
     # Health
     app.include_router(health_router, prefix="/api/v1")
@@ -304,6 +305,9 @@ def _include_routers(app: FastAPI) -> None:
 
     # Contrato público de plugins externos
     app.include_router(plugins_router, prefix="/api/v1")
+
+    # Edge — ativação por licença e ingestão em lote (ADR-018)
+    app.include_router(edge_router, prefix="/api/v1")
 
     # Analytics — catálogo e eventos
     app.include_router(analytics_router, prefix="/api/v1")

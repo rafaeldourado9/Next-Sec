@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 
 from analytics.core.config import get_settings
-from analytics.core.outbox import EventOutbox, run_retry_loop
+from analytics.core.outbox import EventOutbox, SendOutcome, run_retry_loop
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,27 @@ logger = logging.getLogger(__name__)
 # JPEG referenciado por `snapshot_path` existe de fato, no disco local.
 _SNAPSHOTS_BASE_DIR = Path(os.environ.get("SNAPSHOTS_PATH", "/snapshots"))
 
+# Teto do `Retry-After` que aceitamos da VPS. Um valor absurdo (bug do lado
+# dela, ou header hostil de um proxy no meio do caminho) congelaria a fila
+# inteira do cliente por horas sem que ninguém percebesse.
+_MAX_RETRY_AFTER_SECONDS = 900
+_DEFAULT_RETRY_AFTER_SECONDS = 30
+
+
+def _retry_after_seconds(response: httpx.Response) -> int:
+    """Lê `Retry-After` da resposta, com default e teto sensatos.
+
+    Só a forma em segundos é interpretada — a variante HTTP-date do RFC 9110
+    exige confiar no relógio do cliente, que num mini-PC sem NTP é justamente
+    o que não dá pra assumir.
+    """
+    raw = response.headers.get("Retry-After", "")
+    try:
+        seconds = int(float(raw))
+    except (TypeError, ValueError):
+        seconds = _DEFAULT_RETRY_AFTER_SECONDS
+    return max(1, min(seconds, _MAX_RETRY_AFTER_SECONDS))
+
 
 class _RetryableError(Exception):
     """Erro transitório (rede, timeout, 5xx da VPS) — vale enfileirar para retry.
@@ -29,6 +50,20 @@ class _RetryableError(Exception):
     Distinto de um `httpx.HTTPStatusError` 4xx, que indica um problema no
     próprio conteúdo do evento (validação) — reenfileirar não ajudaria.
     """
+
+
+class _ThrottledError(_RetryableError):
+    """A VPS recusou por cota (429) e disse por quanto tempo esperar.
+
+    É um 4xx que, ao contrário dos outros, **deve** ser reenfileirado: não há
+    nada errado com o evento, só com o ritmo. Carrega o `Retry-After` para o
+    outbox adiar a fila inteira em vez de queimar tentativas item a item (ver
+    ADR-018 §5 e `EventOutbox.defer_all`).
+    """
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        super().__init__(f"Cota de ingestão excedida — aguardar {retry_after_seconds}s")
+        self.retry_after_seconds = retry_after_seconds
 
 
 class VMSClient:
@@ -61,8 +96,12 @@ class VMSClient:
         self._rois_cache: dict[str | None, list[dict[str, Any]]] = {}
         self._watchlist_cache: list[dict[str, Any]] = []
 
-        # Fila de retry local (ver ADR-017 §2).
-        self._outbox = EventOutbox(settings.outbox_db_path)
+        # Fila de retry local (ver ADR-017 §2, com cap da ADR-018 §5).
+        self._outbox = EventOutbox(
+            settings.outbox_db_path,
+            max_rows=settings.outbox_max_rows,
+            max_age_seconds=settings.outbox_max_age_seconds,
+        )
         self._retry_task: asyncio.Task[None] | None = None
 
         # ARQ pool pro Redis LOCAL — só usado quando edge_deployment=True,
@@ -221,6 +260,7 @@ class VMSClient:
         confidence: float | None = None,
         occurred_at: str | None = None,
         snapshot_path: str | None = None,
+        mediamtx_path: str | None = None,
     ) -> bool:
         """
         Envia evento detectado pelo plugin via POST /api/v1/plugins/events.
@@ -261,16 +301,38 @@ class VMSClient:
         if self._edge_deployment and snapshot_path:
             local_snapshot_path = str(_SNAPSHOTS_BASE_DIR / snapshot_path)
 
+        # `mediamtx_path`/`occurred_at` não vão no corpo do evento — são só o
+        # que a task local de clipe precisa pra achar a gravação contínua da
+        # câmera (ADR-018 §4). Viajam junto no payload enfileirado pra
+        # sobreviverem a um reenvio depois de queda de rede.
+        clip_context = {"mediamtx_path": mediamtx_path, "occurred_at": occurred_at}
+
         try:
             result = await self._send_event(body, local_snapshot_path)
-        except _RetryableError:
-            queued_payload = {"body": body, "local_snapshot_path": local_snapshot_path}
+        except _RetryableError as exc:
+            queued_payload = {
+                "body": body,
+                "local_snapshot_path": local_snapshot_path,
+                "clip_context": clip_context,
+            }
             try:
                 await asyncio.to_thread(self._outbox.enqueue, queued_payload)
-                logger.warning(
-                    "Falha de rede ao enviar evento (camera=%s tipo=%s) — enfileirado para retry local",
-                    camera_id, event_type,
-                )
+                if isinstance(exc, _ThrottledError):
+                    # Adia a fila junto: sem isso, o loop de retry tentaria o
+                    # backlog inteiro no próximo ciclo e tomaria 429 em cada
+                    # item — exatamente o comportamento que a cota existe pra
+                    # evitar (ADR-018 §5).
+                    await asyncio.to_thread(self._outbox.defer_all, exc.retry_after_seconds)
+                    logger.warning(
+                        "VPS pediu backpressure (%ds) — evento enfileirado e fila adiada",
+                        exc.retry_after_seconds,
+                    )
+                else:
+                    logger.warning(
+                        "Falha de rede ao enviar evento (camera=%s tipo=%s) — "
+                        "enfileirado para retry local",
+                        camera_id, event_type,
+                    )
                 return True
             except Exception:
                 logger.exception("Falha ao enfileirar evento na fila local de retry")
@@ -284,7 +346,7 @@ class VMSClient:
         if self._edge_deployment and local_snapshot_path:
             event_id = result.get("id") if isinstance(result, dict) else None
             if event_id:
-                await self._enqueue_local_clip_task(event_id, local_snapshot_path)
+                await self._enqueue_local_clip_task(event_id, local_snapshot_path, clip_context)
 
         return True
 
@@ -315,49 +377,67 @@ class VMSClient:
             resp.raise_for_status()
             return resp.json()  # type: ignore[no-any-return]
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise _ThrottledError(_retry_after_seconds(exc.response)) from exc
             if exc.response.status_code >= 500:
                 raise _RetryableError(str(exc)) from exc
             raise
         except httpx.HTTPError as exc:
             raise _RetryableError(str(exc)) from exc
 
-    async def _post_event_payload(self, queued_payload: dict[str, Any]) -> bool:
+    async def _post_event_payload(self, queued_payload: dict[str, Any]) -> SendOutcome:
         """Callback usado pelo loop de retry do outbox (`run_retry_loop`).
 
         Mesma lógica de envio de `ingest_event`, mas nunca levanta: sucesso
-        vira `True` (a linha é removida da fila) e qualquer falha vira
-        `False` (a linha é reagendada com backoff) — o outbox não sabe (nem
-        precisa saber) a diferença entre os tipos de erro, só se deu certo.
+        vira `delivered=True` (a linha é removida da fila) e qualquer falha
+        vira `delivered=False` (a linha é reagendada com backoff). A única
+        distinção que o outbox precisa fazer é entre "falhou" e "a VPS mandou
+        esperar" — só o segundo caso adia a fila inteira (ADR-018 §5).
         """
         try:
             result = await self._send_event(
                 queued_payload["body"], queued_payload.get("local_snapshot_path")
             )
+        except _ThrottledError as exc:
+            return SendOutcome(delivered=False, retry_after_seconds=exc.retry_after_seconds)
         except Exception:
             logger.debug("Outbox: reenvio ainda falhando", exc_info=True)
-            return False
+            return SendOutcome(delivered=False)
 
         local_snapshot_path = queued_payload.get("local_snapshot_path")
         if self._edge_deployment and local_snapshot_path:
             event_id = result.get("id") if isinstance(result, dict) else None
             if event_id:
-                await self._enqueue_local_clip_task(event_id, local_snapshot_path)
-        return True
+                await self._enqueue_local_clip_task(
+                    event_id, local_snapshot_path, queued_payload.get("clip_context") or {}
+                )
+        return SendOutcome(delivered=True)
 
-    async def _enqueue_local_clip_task(self, event_id: str, local_snapshot_path: str) -> None:
+    async def _enqueue_local_clip_task(
+        self, event_id: str, local_snapshot_path: str, clip_context: dict[str, Any] | None = None
+    ) -> None:
         """Avisa o worker de edge local (EdgeWorkerSettings, ver ADR-017 §1) que
         um evento foi confirmadamente ingerido pela VPS central — o worker
         gera o MP4 localmente (ffmpeg, mesmo hardware) e faz o PUT do clipe
         pra VPS. Enfileira no Redis LOCAL (mesmo Redis do compose de edge),
         nunca no da VPS central. Best-effort: falha aqui não afeta o retorno
-        de `ingest_event` (o evento em si já foi confirmado)."""
+        de `ingest_event` (o evento em si já foi confirmado).
+
+        `clip_context` leva `mediamtx_path`/`occurred_at` — sem eles o worker
+        não localiza a gravação contínua e o clipe volta a ser o freeze-frame
+        do JPEG (ADR-018 §4)."""
         if not self._arq_pool:
             return
+        context = clip_context or {}
+        settings = get_settings()
         try:
             await self._arq_pool.enqueue_job(
                 "task_render_and_upload_edge_clip",
                 event_id,
                 local_snapshot_path,
+                settings.edge_clip_seconds,
+                context.get("mediamtx_path"),
+                context.get("occurred_at"),
             )
         except Exception:
             logger.exception(

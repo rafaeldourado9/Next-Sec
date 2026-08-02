@@ -260,6 +260,120 @@ async def onboard_client(body: dict, claims: AdminUser, db: DbSession) -> dict:
     }
 
 
+# ─── Licenças de edge (ADR-018) ───────────────────────────────────────────────
+
+@router.post(
+    "/licenses",
+    status_code=status.HTTP_201_CREATED,
+    summary="Emite uma licença de edge para um tenant existente",
+)
+async def create_license(body: dict, claims: AdminUser, db: DbSession) -> dict:
+    """
+    Caminho de onboarding a partir da ADR-018: o admin emite uma licença e
+    **entrega só a string** ao cliente. Nenhum segredo é gerado aqui — a API
+    key nasce depois, em `POST /edge/activate`, na máquina do cliente e
+    vinculada a ela.
+
+    Substitui a parte de provisionamento de `POST /admin/onboard-client` (que
+    devolvia API key e chave privada WireGuard num pacote por cliente). Os
+    limites operacionais são opcionais no corpo — os defaults da migration
+    0014 cobrem o caso comum.
+    """
+    tenant_id = str(body.get("tenant_id") or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id é obrigatório")
+
+    tenant = await db.scalar(
+        select(TenantModel).where(TenantModel.id == tenant_id, TenantModel.deleted_at.is_(None))
+    )
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant não encontrado")
+
+    license_key_value = _generate_license_key()
+    license_key = LicenseKeyModel(
+        license_key=license_key_value,
+        tenant_id=tenant_id,
+        status="active",
+        deployment_model="self_hosted",
+        max_cameras=int(body.get("max_cameras") or 0),
+    )
+    for field in (
+        "events_per_minute", "clip_seconds", "clip_max_height",
+        "clip_retention_days", "storage_quota_mb",
+    ):
+        if body.get(field) is not None:
+            setattr(license_key, field, int(body[field]))
+
+    db.add(license_key)
+    await db.flush()
+
+    db.add(AuditLogModel(
+        tenant_id=tenant_id,
+        user_id=claims.user_id,
+        action="admin.license.created",
+        resource_type="license_key",
+        resource_id=license_key.id,
+        payload={"max_cameras": license_key.max_cameras},
+    ))
+    await db.commit()
+
+    logger.info("Admin %s emitiu licença %s para tenant %s", claims.user_id, license_key.id, tenant_id)
+    return {"id": license_key.id, "license_key": license_key_value, "tenant_id": tenant_id}
+
+
+@router.get("/licenses", summary="Listar licenças e o estado de ativação de cada uma")
+async def list_licenses(
+    claims: AdminUser,
+    db: DbSession,
+    tenant_id: str | None = Query(default=None),
+) -> dict:
+    """Visão de suporte: quem ativou, em que máquina, e quando deu sinal pela
+    última vez — é daqui que sai a decisão de desvincular."""
+    stmt = select(LicenseKeyModel).order_by(LicenseKeyModel.created_at.desc())
+    if tenant_id:
+        stmt = stmt.where(LicenseKeyModel.tenant_id == tenant_id)
+    rows = (await db.execute(stmt.limit(200))).scalars().all()
+
+    return {"items": [
+        {
+            "id": lk.id,
+            "license_key": lk.license_key,
+            "tenant_id": lk.tenant_id,
+            "status": lk.status,
+            "activated_at": lk.activated_at.isoformat() if lk.activated_at else None,
+            "activated_hostname": lk.activated_hostname,
+            "is_bound": bool(lk.hardware_fingerprint),
+            "agent_id": lk.agent_id,
+            "agent_version": lk.agent_version,
+            "last_seen_at": lk.last_seen_at.isoformat() if lk.last_seen_at else None,
+            "limits": {
+                "events_per_minute": lk.events_per_minute,
+                "clip_seconds": lk.clip_seconds,
+                "clip_max_height": lk.clip_max_height,
+                "clip_retention_days": lk.clip_retention_days,
+                "storage_quota_mb": lk.storage_quota_mb,
+            },
+        }
+        for lk in rows
+    ]}
+
+
+@router.post(
+    "/licenses/{license_key_id}/unbind",
+    summary="Desvincula a licença da máquina atual (cliente trocou de hardware)",
+)
+async def unbind_license(license_key_id: str, claims: AdminUser, db: DbSession) -> dict:
+    """
+    Libera a licença para ser ativada noutra máquina e **revoga junto** a API
+    key da instalação anterior — sem isso, a máquina antiga continuaria
+    enviando eventos indefinidamente.
+    """
+    from vms.edge.service import EdgeActivationService
+
+    await EdgeActivationService(db).unbind(license_key_id, claims.user_id)
+    return {"id": license_key_id, "is_bound": False}
+
+
 @router.get("/tenants/{tenant_id}", summary="Detalhe do tenant")
 async def get_tenant(tenant_id: str, claims: AdminUser, db: DbSession) -> dict:
     tenant = await db.scalar(

@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,11 +22,16 @@ class EventClipModel(Base):
     """Tabela de clipes gerados a partir de um evento (vms_events)."""
 
     __tablename__ = "event_clips"
+    __table_args__ = (Index("ix_event_clips_tenant_created", "tenant_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(_UUID_TYPE, primary_key=True, default=_uuid)
     vms_event_id: Mapped[str] = mapped_column(
         _UUID_TYPE, ForeignKey("vms_events.id", ondelete="CASCADE"), nullable=False, unique=True
     )
+    # Denormalizado de `vms_events.tenant_id` (ADR-018 §4): o clipe nunca muda
+    # de dono, e sem isso a cota de storage exigiria um JOIN a cada upload.
+    tenant_id: Mapped[str | None] = mapped_column(_UUID_TYPE, nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     storage_provider: Mapped[str] = mapped_column(String(50), nullable=False, default="local")
     storage_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
     storage_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)

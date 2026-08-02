@@ -68,6 +68,9 @@ class Orchestrator:
         self._vms_client = VMSClient()
         self._running = False
         self._camera_tasks: dict[str, asyncio.Task[None]] = {}
+        # camera_id → mediamtx_path, para o clipe de edge localizar a gravação
+        # contínua daquela câmera (ADR-018 §4).
+        self._mediamtx_paths: dict[str, str] = {}
         self._discovery_task: asyncio.Task[None] | None = None
         self._detection_cache = DetectionCache(max_empty_frames=30, ttl_seconds=60.0)
         self._metrics = MetricsCollector()
@@ -288,6 +291,12 @@ class Orchestrator:
     ) -> None:
         """Inicia a task de processamento da câmera, se online e ainda não rastreada."""
         cam_id = cam["id"]
+        # Guardado mesmo para câmera offline/já rastreada: é o que o worker de
+        # edge usa pra achar a gravação contínua da câmera e recortar o clipe
+        # real do evento (ADR-018 §4). Sem isso, o clipe volta a ser o
+        # freeze-frame do JPEG.
+        if cam.get("mediamtx_path"):
+            self._mediamtx_paths[cam_id] = cam["mediamtx_path"]
         if cam_id in self._camera_tasks:
             return
         if not cam.get("is_online", False):
@@ -757,4 +766,5 @@ class Orchestrator:
             confidence=result.confidence,
             occurred_at=result.occurred_at.isoformat(),
             snapshot_path=snapshot_path,
+            mediamtx_path=self._mediamtx_paths.get(result.camera_id),
         )
